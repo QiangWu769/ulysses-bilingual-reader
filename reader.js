@@ -78,9 +78,11 @@ function renderPage(i) {
   $('source-page').textContent = `PDF 第 ${page.pdfPage} 页`;
   $('prev').disabled = pageIndex === 0;
   $('next').disabled = pageIndex === pages.length - 1;
-  document.querySelector('.intro').hidden = pageIndex !== 0;
+  const intro = document.querySelector('.intro');
+  intro.hidden = !page.sectionStart && pageIndex !== 0;
+  intro.querySelector('h2').textContent = `— ${page.heading} —`;
+  $('continuation').textContent = pageIndex === pages.length - 1 ? `本次内容到此 · 正文前 ${pages.length} 页` : page.endsMidParagraph ? '本页末句接续至下一页' : '';
   $('parallel').classList.toggle('opening', pageIndex === 0);
-  $('continuation').textContent = pageIndex === pages.length - 1 ? '本次内容到此 · 正文前五页' : page.endsMidParagraph ? '本页末句接续至下一页' : '';
   $('progress').style.width = ((pageIndex + 1) / pages.length * 100) + '%';
   $('reading').scrollTop = 0;
   $('announcement').textContent = `正文第 ${pageIndex + 1} 页，PDF 第 ${page.pdfPage} 页`;
