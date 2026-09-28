@@ -7,6 +7,33 @@ let queryController = null, querySequence = 0, currentQuery = '', lookupHistory 
 let pageIndex = 0, fontSize = 18, activeWord = null, press = null, returnFocus = null;
 let lastPointerType = '', ignoreClickUntil = 0;
 const dialog = $('lookup-dialog');
+const canSpeak = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window;
+let voice = null, speakingEls = [];
+function pickVoice() {
+  const english = speechSynthesis.getVoices().filter(item => /^en/i.test(item.lang));
+  voice = english.find(item => /^en[-_]US$/i.test(item.lang) && !/compact/i.test(item.name)) || english[0] || null;
+}
+function speak(text, ...marks) {
+  const spoken = text.replace(/^-+|-+$/g, '').trim();
+  if (!canSpeak || !spoken) return;
+  speechSynthesis.cancel();
+  speakingEls.forEach(el => el.classList.remove('speaking'));
+  speakingEls = marks.filter(Boolean);
+  const done = () => { speakingEls.forEach(el => el.classList.remove('speaking')); speakingEls = []; };
+  const utterance = new SpeechSynthesisUtterance(spoken);
+  utterance.lang = 'en-US';
+  utterance.rate = 0.85;
+  if (voice) utterance.voice = voice;
+  utterance.onstart = () => speakingEls.forEach(el => el.classList.add('speaking'));
+  utterance.onend = utterance.onerror = done;
+  speechSynthesis.speak(utterance);
+}
+if (canSpeak) {
+  pickVoice();
+  speechSynthesis.addEventListener('voiceschanged', pickVoice);
+  $('lookup-speak').hidden = false;
+  $('lookup-speak').addEventListener('click', () => speak(currentQuery, $('lookup-speak')));
+}
 const THEMES = { paper: '#cfc6b6', sepia: '#a89272', mist: '#a9b8a6', white: '#edf1f5', night: '#0b0c0e' };
 const themeMenu = $('theme-menu');
 function applyTheme(name, save = false) {
@@ -305,6 +332,7 @@ $('parallel').addEventListener('contextmenu', event => {
 $('parallel').addEventListener('click', event => {
   const word = event.target.closest('.word');
   if (!word || Date.now() < ignoreClickUntil) return;
+  speak(word.textContent, word);
   const pointerType = event.pointerType || lastPointerType;
   if (pointerType === 'touch' || pointerType === 'pen') return;
   showWord(word.textContent, word);
