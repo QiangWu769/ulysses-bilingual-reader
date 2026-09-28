@@ -11,7 +11,7 @@ const canSpeak = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in wi
 // Played inside the tap so mobile browsers allow the recording that arrives after the network request.
 const SILENT_WAV = 'data:audio/wav;base64,UklGRvQHAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YdAHAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==';
 const player = new Audio();
-let voice = null, speakingEls = [], speakToken = 0, accent = 'us', aiAbort = null, toastTimer = 0;
+let voice = null, speakingEls = [], speakToken = 0, accent = 'us', toastTimer = 0;
 // Pre-generated paragraph recordings (see tools/generate-audio.mjs); the manifest lists which files exist.
 const audioNames = new Set();
 fetch('audio/manifest.json').then(response => response.ok ? response.json() : null).then(manifest => {
@@ -36,8 +36,6 @@ function showToast(message) {
 }
 function stopSpeaking() {
   speakToken++;
-  if (aiAbort) aiAbort.abort();
-  aiAbort = null;
   player.pause();
   if (canSpeak) speechSynthesis.cancel();
   markSpeaking([]);
@@ -62,8 +60,8 @@ function playRecording(url, token) {
   });
 }
 // Human recording first (Free Dictionary API); the browser's built-in voice when there is none.
-// Order: Gemini voice (when enabled) -> human recording -> browser voice. recordingOnly skips Gemini (accent buttons).
-function speak(text, marks = [], preferred = accent, recordingOnly = false) {
+// Order: human recording -> browser voice.
+function speak(text, marks = [], preferred = accent) {
   const spoken = text.replace(/^-+|-+$/g, '').trim();
   if (!spoken) return;
   stopSpeaking();
@@ -72,9 +70,7 @@ function speak(text, marks = [], preferred = accent, recordingOnly = false) {
   if (/^-|-$/.test(text.trim())) { speakSynthetic(spoken, token); return; }
   player.src = SILENT_WAV;
   player.play().catch(() => {});
-  const recorded = () => speakRecorded(spoken, token, preferred);
-  if (!recordingOnly && UlyssesAIVoice.isReady()) speakWithAI(spoken, token, marks, recorded);
-  else recorded();
+  speakRecorded(spoken, token, preferred);
 }
 function speakRecorded(spoken, token, preferred) {
   Promise.race([UlyssesPronunciation.lookup(spoken), new Promise(resolve => setTimeout(resolve, 2500, null))]).then(info => {
@@ -101,27 +97,7 @@ function speakSentences(plain, token) {
     speechSynthesis.speak(utterance);
   });
 }
-async function speakWithAI(plain, token, marks, fallback = () => speakSentences(plain, token)) {
-  const controller = new AbortController();
-  aiAbort = controller;
-  const timeout = setTimeout(() => controller.abort(), 45000);
-  marks.forEach(el => el.classList.add('loading'));
-  try {
-    const blob = await UlyssesAIVoice.synthesize(plain, { signal: controller.signal });
-    if (token !== speakToken) return;
-    const url = URL.createObjectURL(blob);
-    try { await playRecording(url, token); } finally { URL.revokeObjectURL(url); }
-  } catch (error) {
-    if (token !== speakToken) return;
-    showToast(error && error.name === 'AbortError' ? 'AI 语音响应太慢，已改用备用发音。' : error && error.kind ? UlyssesAIVoice.describe(error) : 'AI 语音播放失败，已改用备用发音。');
-    fallback();
-  } finally {
-    clearTimeout(timeout);
-    marks.forEach(el => el.classList.remove('loading'));
-    if (aiAbort === controller) aiAbort = null;
-  }
-}
-// Reads a whole paragraph: pre-generated recording, then Gemini voice when enabled, then the browser voice sentence by sentence.
+// Reads a whole paragraph: pre-generated recording, then the browser voice sentence by sentence.
 function speakParagraph(text, marks, name) {
   const wasReading = marks.some(el => speakingEls.includes(el));
   stopSpeaking();
@@ -129,17 +105,11 @@ function speakParagraph(text, marks, name) {
   const token = speakToken;
   markSpeaking(marks);
   const plain = text.replace(/\s+/g, ' ').trim();
-  const synthetic = () => {
-    if (!UlyssesAIVoice.isReady()) { speakSentences(plain, token); return; }
-    player.src = SILENT_WAV;
-    player.play().catch(() => {});
-    speakWithAI(plain, token, marks);
-  };
   if (name && audioNames.has(name)) {
-    playRecording('audio/' + name + '.mp3', token).catch(() => { if (token === speakToken) synthetic(); });
+    playRecording('audio/' + name + '.mp3', token).catch(() => { if (token === speakToken) speakSentences(plain, token); });
     return;
   }
-  synthetic();
+  speakSentences(plain, token);
 }
 function renderPronunciation(info, query) {
   const audio = info?.audio || {};
@@ -161,7 +131,7 @@ for (const [id, name] of [['pron-us', 'us'], ['pron-uk', 'uk']]) {
   $(id).addEventListener('click', () => {
     accent = name;
     try { localStorage.setItem('ulysses-reader-accent', name); } catch (e) {}
-    speak(currentQuery, [$(id), $('lookup-speak')], name, true);
+    speak(currentQuery, [$(id), $('lookup-speak')], name);
   });
 }
 const THEMES = { paper: '#cfc6b6', sepia: '#a89272', mist: '#a9b8a6', white: '#edf1f5', night: '#0b0c0e' };
@@ -537,55 +507,6 @@ document.addEventListener('keydown', event => {
   if (event.key === 'ArrowRight') { event.preventDefault(); renderPage(pageIndex + 1); }
   if (event.key === 'ArrowLeft') { event.preventDefault(); renderPage(pageIndex - 1); }
 });
-const aiDialog = $('ai-dialog');
-function fillAiForm() {
-  const config = UlyssesAIVoice.getConfig();
-  $('ai-enabled').checked = config.enabled;
-  $('ai-key').value = config.apiKey;
-  $('ai-model').value = config.model;
-  $('ai-voice').value = config.voice;
-  $('ai-status').textContent = '';
-}
-function saveAiForm() {
-  const apiKey = $('ai-key').value.trim();
-  const model = $('ai-model').value.trim() || 'gemini-3.8-flash-tts';
-  if (!/^[A-Za-z0-9._-]+$/.test(model)) { $('ai-status').textContent = '模型名只能包含字母、数字、点、横线和下划线。'; return false; }
-  if ($('ai-enabled').checked && apiKey.length < 10) { $('ai-status').textContent = '请先粘贴 API 密钥再启用。'; return false; }
-  UlyssesAIVoice.setConfig({ enabled: $('ai-enabled').checked, apiKey, model, voice: $('ai-voice').value });
-  return true;
-}
-$('ai-settings-open').addEventListener('click', () => {
-  toggleThemeMenu(false);
-  fillAiForm();
-  aiDialog.showModal();
-  $('ai-enabled').focus({ preventScroll: true });
-});
-$('ai-close').addEventListener('click', () => aiDialog.close());
-$('ai-form').addEventListener('submit', event => {
-  event.preventDefault();
-  if (saveAiForm()) $('ai-status').textContent = '已保存。下次点小狗按钮就会使用这些设置。';
-});
-$('ai-clear').addEventListener('click', () => {
-  UlyssesAIVoice.setConfig({ apiKey: '', enabled: false });
-  fillAiForm();
-  $('ai-status').textContent = '密钥已从这台设备清除。';
-});
-$('ai-test').addEventListener('click', async () => {
-  if (!saveAiForm()) return;
-  if (!UlyssesAIVoice.isReady()) { $('ai-status').textContent = '请勾选“启用”并填写密钥。'; return; }
-  $('ai-status').textContent = '正在生成试听…';
-  player.src = SILENT_WAV;
-  player.play().catch(() => {});
-  try {
-    const blob = await UlyssesAIVoice.synthesize('Stately, plump Buck Mulligan came from the stairhead.');
-    const url = URL.createObjectURL(blob);
-    stopSpeaking();
-    try { $('ai-status').textContent = '正在播放试听。'; await playRecording(url, speakToken); $('ai-status').textContent = '试听完成，设置可用。'; } finally { URL.revokeObjectURL(url); }
-  } catch (error) {
-    $('ai-status').textContent = error && error.kind ? UlyssesAIVoice.describe(error).replace('，已改用备用发音', '') : '试听播放失败，请检查浏览器是否允许播放声音。';
-  }
-});
-aiDialog.addEventListener('close', () => { stopSpeaking(); });
 $('theme-open').addEventListener('click', () => toggleThemeMenu(themeMenu.hidden));
 themeMenu.addEventListener('click', event => {
   const button = event.target.closest('[data-theme-choice]');
