@@ -64,6 +64,7 @@ function speak(text, marks = [], preferred = accent) {
     return playRecording(url, token).catch(() => speakSynthetic(spoken, token));
   });
 }
+const DOG_ICON = '<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false"><g fill="#fff" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"><path d="M6.4 8.2C3.7 8.4 2.9 13 4.6 15.6 6.3 15.2 7 12.2 7.6 10z"/><path d="M17.6 8.2C20.3 8.4 21.1 13 19.4 15.6 17.7 15.2 17 12.2 16.4 10z"/><circle cx="12" cy="12.6" r="6.6"/></g><g fill="currentColor"><circle cx="9.5" cy="11.8" r=".95"/><circle cx="14.5" cy="11.8" r=".95"/><ellipse cx="12" cy="14.6" rx="1.6" ry="1.15"/></g><path d="M12 15.7v1.1m0 0c-.7.9-1.8.9-2.3.3m2.3-.3c.7.9 1.8.9 2.3.3" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>';
 // Reads a whole paragraph sentence by sentence (long single utterances get cut off in some browsers). Click again to stop.
 function speakParagraph(text, marks) {
   if (!canSpeak) return;
@@ -172,7 +173,7 @@ function renderPage(i) {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'para-speak';
-      button.textContent = '🐶♪';
+      button.innerHTML = DOG_ICON + '<span aria-hidden="true">♪</span>';
       button.title = '朗读本段 · 再点一次停止';
       button.setAttribute('aria-label', '朗读本段英文');
       button.addEventListener('click', () => speakParagraph(pair.en, [en, button]));
