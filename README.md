@@ -14,6 +14,21 @@ James Joyce《Ulysses》中英对照阅读网页，已收录用户提供的 PDF 
 - 词源中提到的英语词素与词典明确标注的原形可以继续点查，并可返回上一个词。
 - 词义与词源分栏展示。中文未收录时显示英文原文；没有词源时明确提示，不自动猜测拆词。
 
+## 预生成的段落朗读（访客无需密钥）
+
+小狗按钮的朗读顺序：`audio/` 里预生成的 MP3 → 访客自己配置的 Gemini 语音（可选）→ 浏览器自带语音。预生成音频由 `tools/generate-audio.mjs` 调用 Google Cloud Text-to-Speech 一次性生成，随网站发布，访客不需要密钥，也不产生后续调用费用。
+
+在自己电脑上运行（需要 Node 18+；密钥只从环境变量读取，不会写入任何文件，也不要提交到仓库）：
+
+```
+export GOOGLE_TTS_API_KEY=你的密钥        # Windows PowerShell: $env:GOOGLE_TTS_API_KEY="你的密钥"
+node tools/generate-audio.mjs --dry-run   # 只统计字符数，不发请求（前 100 页约 21 万字符）
+node tools/generate-audio.mjs --pages 1-3 # 先生成前几页试听
+node tools/generate-audio.mjs             # 生成全部；已生成的会跳过，可中断后继续
+```
+
+可选参数：`--voice en-GB-Chirp3-HD-Charon`（默认 `en-US-Chirp3-HD-Aoede`，美式女声）、`--rate 0.95`、`--concurrency 3`。生成后把 `audio/` 目录提交并推送。段落文字被修改后，对应文件名（含文本哈希）不再匹配，会自动退回其他朗读方式，重新运行脚本即可补生成。费用和免费额度以 Google 官方定价为准；密钥需要在 Google Cloud 启用 Text-to-Speech API，并建议限制为只能调用该 API。
+
 ## 在线词典
 
 网页直接通过 [MediaWiki Action API](https://www.mediawiki.org/wiki/API:Parsing_wikitext) 查询英语和中文 Wiktionary 的英语词条，不需要账号、API 密钥或后端服务器。只发送所查词形，不发送正文或阅读历史。遵循接口限流，支持取消过期请求、超时提示和手动重试。查询过的在线词条在浏览器本地缓存最多 24 小时；“重新查询”可更新。

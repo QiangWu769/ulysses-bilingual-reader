@@ -12,6 +12,11 @@ const canSpeak = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in wi
 const SILENT_WAV = 'data:audio/wav;base64,UklGRvQHAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YdAHAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==';
 const player = new Audio();
 let voice = null, speakingEls = [], speakToken = 0, accent = 'us', aiAbort = null, toastTimer = 0;
+// Pre-generated paragraph recordings (see tools/generate-audio.mjs); the manifest lists which files exist.
+const audioNames = new Set();
+fetch('audio/manifest.json').then(response => response.ok ? response.json() : null).then(manifest => {
+  if (manifest && Array.isArray(manifest.files)) manifest.files.forEach(item => audioNames.add(item));
+}).catch(() => {});
 try { if (localStorage.getItem('ulysses-reader-accent') === 'uk') accent = 'uk'; } catch (e) {}
 function pickVoice() {
   const english = speechSynthesis.getVoices().filter(item => /^en/i.test(item.lang));
@@ -83,7 +88,7 @@ const DOG_ICON = '<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="t
 // Reads a whole paragraph sentence by sentence (long single utterances get cut off in some browsers). Click again to stop.
 function speakSentences(plain, token) {
   if (token !== speakToken) return;
-  if (!canSpeak) { markSpeaking([]); return; }
+  if (!canSpeak) { markSpeaking([]); showToast('这个浏览器不支持朗读。'); return; }
   const sentences = plain.match(/[^.!?…]+(?:[.!?…]+["'”’)\]]*|$)\s*/g) || [plain];
   sentences.forEach((sentence, index) => {
     const utterance = new SpeechSynthesisUtterance(sentence.trim());
@@ -116,21 +121,25 @@ async function speakWithAI(plain, token, marks, fallback = () => speakSentences(
     if (aiAbort === controller) aiAbort = null;
   }
 }
-// Reads a whole paragraph: Gemini voice when enabled, otherwise (or on any failure) the browser voice sentence by sentence.
-function speakParagraph(text, marks) {
+// Reads a whole paragraph: pre-generated recording, then Gemini voice when enabled, then the browser voice sentence by sentence.
+function speakParagraph(text, marks, name) {
   const wasReading = marks.some(el => speakingEls.includes(el));
   stopSpeaking();
   if (wasReading) return;
   const token = speakToken;
   markSpeaking(marks);
   const plain = text.replace(/\s+/g, ' ').trim();
-  if (UlyssesAIVoice.isReady()) {
+  const synthetic = () => {
+    if (!UlyssesAIVoice.isReady()) { speakSentences(plain, token); return; }
     player.src = SILENT_WAV;
     player.play().catch(() => {});
     speakWithAI(plain, token, marks);
+  };
+  if (name && audioNames.has(name)) {
+    playRecording('audio/' + name + '.mp3', token).catch(() => { if (token === speakToken) synthetic(); });
     return;
   }
-  speakSentences(plain, token);
+  synthetic();
 }
 function renderPronunciation(info, query) {
   const audio = info?.audio || {};
@@ -209,20 +218,21 @@ function renderPage(i) {
   pageIndex = Math.min(pages.length - 1, Math.max(0, i));
   const page = pages[pageIndex];
   const content = document.createDocumentFragment();
-  page.paragraphs.forEach(pair => {
+  const pageNo = pageIndex;
+  page.paragraphs.forEach((pair, paragraphNo) => {
     const row = document.createElement('div');
     row.className = 'pair';
     const en = document.createElement('p');
     en.lang = 'en';
     appendEnglish(en, pair.en);
-    if (canSpeak || UlyssesAIVoice.isReady()) {
+    {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'para-speak';
       button.innerHTML = DOG_ICON + '<span aria-hidden="true">♪</span>';
       button.title = '朗读本段 · 再点一次停止';
       button.setAttribute('aria-label', '朗读本段英文');
-      button.addEventListener('click', () => speakParagraph(pair.en, [en, button]));
+      button.addEventListener('click', () => speakParagraph(pair.en, [en, button], UlyssesAudioKey.name(pageNo, paragraphNo, pair.en)));
       en.append(button);
     }
     const zh = document.createElement('p');
@@ -536,11 +546,6 @@ function fillAiForm() {
   $('ai-voice').value = config.voice;
   $('ai-status').textContent = '';
 }
-function rerenderKeepScroll() {
-  const top = $('reading').scrollTop;
-  renderPage(pageIndex);
-  $('reading').scrollTop = top;
-}
 function saveAiForm() {
   const apiKey = $('ai-key').value.trim();
   const model = $('ai-model').value.trim() || 'gemini-3.8-flash-tts';
@@ -558,13 +563,12 @@ $('ai-settings-open').addEventListener('click', () => {
 $('ai-close').addEventListener('click', () => aiDialog.close());
 $('ai-form').addEventListener('submit', event => {
   event.preventDefault();
-  if (saveAiForm()) { $('ai-status').textContent = '已保存。下次点小狗按钮就会使用这些设置。'; rerenderKeepScroll(); }
+  if (saveAiForm()) $('ai-status').textContent = '已保存。下次点小狗按钮就会使用这些设置。';
 });
 $('ai-clear').addEventListener('click', () => {
   UlyssesAIVoice.setConfig({ apiKey: '', enabled: false });
   fillAiForm();
   $('ai-status').textContent = '密钥已从这台设备清除。';
-  rerenderKeepScroll();
 });
 $('ai-test').addEventListener('click', async () => {
   if (!saveAiForm()) return;
