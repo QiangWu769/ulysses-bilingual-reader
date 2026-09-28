@@ -27,7 +27,7 @@ node tools/generate-audio.mjs --pages 1-3 # 先生成前几页试听
 node tools/generate-audio.mjs             # 生成全部；已生成的会跳过，可中断后继续
 ```
 
-可选参数：`--voice en-US-Chirp3-HD-Aoede`（默认 `en-GB-Chirp3-HD-Charon`）、`--rate 0.95`、`--concurrency 3`。生成后把 `audio/` 目录提交并推送。段落文字被修改后，对应文件名（含文本哈希）不再匹配，会自动退回其他朗读方式，重新运行脚本即可补生成。费用和免费额度以 Google 官方定价为准；密钥需要在 Google Cloud 启用 Text-to-Speech API，并建议限制为只能调用该 API。
+可选参数：`--voice en-GB-Chirp3-HD-Charon`（默认 `en-US-Chirp3-HD-Aoede`，美式女声）、`--rate 0.95`、`--concurrency 3`。生成后把 `audio/` 目录提交并推送。段落文字被修改后，对应文件名（含文本哈希）不再匹配，会自动退回其他朗读方式，重新运行脚本即可补生成。费用和免费额度以 Google 官方定价为准；密钥需要在 Google Cloud 启用 Text-to-Speech API，并建议限制为只能调用该 API。
 
 ## 在线词典
 

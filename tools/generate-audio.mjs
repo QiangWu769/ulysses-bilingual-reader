@@ -19,7 +19,7 @@ const outDir = path.join(root, 'audio');
 const args = process.argv.slice(2);
 const flag = (key, fallback) => { const i = args.indexOf('--' + key); return i >= 0 ? (args[i + 1] ?? true) : fallback; };
 const dryRun = args.includes('--dry-run');
-const voiceName = flag('voice', 'en-GB-Chirp3-HD-Charon');
+const voiceName = flag('voice', 'en-US-Chirp3-HD-Aoede');
 const rate = Number(flag('rate', 0.95));
 const concurrency = Number(flag('concurrency', 3));
 const endpoint = process.env.TTS_ENDPOINT || 'https://texttospeech.googleapis.com/v1/text:synthesize';
