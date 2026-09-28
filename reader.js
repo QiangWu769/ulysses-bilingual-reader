@@ -7,6 +7,22 @@ let queryController = null, querySequence = 0, currentQuery = '', lookupHistory 
 let pageIndex = 0, fontSize = 18, activeWord = null, press = null, returnFocus = null;
 let lastPointerType = '', ignoreClickUntil = 0;
 const dialog = $('lookup-dialog');
+const THEMES = { paper: '#cfc6b6', sepia: '#a89272', mist: '#a9b8a6', white: '#edf1f5', night: '#0b0c0e' };
+const themeMenu = $('theme-menu');
+function applyTheme(name, save = false) {
+  if (!(name in THEMES)) name = 'paper';
+  document.documentElement.dataset.theme = name;
+  document.querySelector('meta[name=theme-color]').content = THEMES[name];
+  for (const button of themeMenu.querySelectorAll('[data-theme-choice]')) {
+    button.setAttribute('aria-checked', String(button.dataset.themeChoice === name));
+  }
+  if (save) try { localStorage.setItem('ulysses-reader-theme', name); } catch (e) {}
+}
+function toggleThemeMenu(open) {
+  themeMenu.hidden = !open;
+  $('theme-open').setAttribute('aria-expanded', String(open));
+  if (open) themeMenu.querySelector('[aria-checked=true]').focus({ preventScroll: true });
+}
 try {
   const stored = Number(localStorage.getItem('ulysses-reader-font'));
   if (stored >= 16 && stored <= 28) fontSize = stored;
@@ -63,6 +79,7 @@ function renderPage(i) {
   $('prev').disabled = pageIndex === 0;
   $('next').disabled = pageIndex === pages.length - 1;
   document.querySelector('.intro').hidden = pageIndex !== 0;
+  $('parallel').classList.toggle('opening', pageIndex === 0);
   $('continuation').textContent = pageIndex === pages.length - 1 ? '本次内容到此 · 正文前五页' : page.endsMidParagraph ? '本页末句接续至下一页' : '';
   $('progress').style.width = ((pageIndex + 1) / pages.length * 100) + '%';
   $('reading').scrollTop = 0;
@@ -345,5 +362,20 @@ document.addEventListener('keydown', event => {
   if (event.key === 'ArrowRight') { event.preventDefault(); renderPage(pageIndex + 1); }
   if (event.key === 'ArrowLeft') { event.preventDefault(); renderPage(pageIndex - 1); }
 });
+$('theme-open').addEventListener('click', () => toggleThemeMenu(themeMenu.hidden));
+themeMenu.addEventListener('click', event => {
+  const button = event.target.closest('[data-theme-choice]');
+  if (!button) return;
+  applyTheme(button.dataset.themeChoice, true);
+  toggleThemeMenu(false);
+  $('theme-open').focus({ preventScroll: true });
+});
+document.addEventListener('pointerdown', event => {
+  if (!themeMenu.hidden && !event.target.closest('#theme-menu, #theme-open')) toggleThemeMenu(false);
+}, { passive: true });
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !themeMenu.hidden) { toggleThemeMenu(false); $('theme-open').focus({ preventScroll: true }); }
+});
+applyTheme(document.documentElement.dataset.theme);
 updateFont();
 renderPage(0);
