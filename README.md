@@ -1,12 +1,12 @@
 # 尤利西斯 · 中英对照阅读
 
-James Joyce《Ulysses》正文前五页的中英对照阅读网页，对应提供的 PDF 第 5–9 页。
+James Joyce《Ulysses》正文前 100 页的中英对照阅读网页，对应提供的 PDF 第 5–104 页。
 
 - 手机横屏时，左侧英文、右侧中文，逐段对照。
 - 支持翻页、页码选择与字号调整。
 - 竖屏时按段落上下排列。
 - 长按英文单词约半秒，直接加载在线词义、构词与词源；电脑可直接点击。
-- 顶部“查词”支持任意英文单词、前缀与后缀（例如 `unbelievable`、`un-`、`-able`），查询范围不受当前五页限制。
+- 顶部“查词”支持任意英文单词、前缀与后缀（例如 `unbelievable`、`un-`、`-able`），查询范围不受已加载正文限制。
 - 词源中提到的英语词素与词典明确标注的原形可以继续点查，并可返回上一个词。
 - 词义与词源分栏展示。中文未收录时显示英文原文；没有词源时明确提示，不自动猜测拆词。
 
@@ -20,7 +20,9 @@ James Joyce《Ulysses》正文前五页的中英对照阅读网页，对应提�
 
 实现分为 `dictionary-parser.js`（提取词源与释义）、`dictionary-client.js`（联网与缓存）、`reader.js`（阅读交互）。接口只提取纯文本，不把外部 HTML 插入页面。相关规范：[跨域访问](https://www.mediawiki.org/wiki/API:Cross-site_requests)、[API 使用规范](https://www.mediawiki.org/wiki/API:Etiquette)、[Wiktionary 许可](https://en.wiktionary.org/wiki/Wiktionary:Copyrights)。
 
-中文为 AI 辅助译文，仅供对照阅读。英文依据 Lerner 2016 版的用户提供 PDF。
+中文为 AI 辅助译文，仅供对照阅读。英文依据 Lerner 2016 版的用户提供 PDF，按原 PDF 分页，保留跨页段落和诗歌换行。正文第 1 页对应 PDF 第 5 页，正文第 100 页对应 PDF 第 104 页。PDF 第 53 页起进入第二部。
+
+译文逐段生成并核对覆盖范围，尚未经专业文学译者逐句审校；原作的双关、典故和方言可能有其他译法。仅渲染当前页，翻页与联网查词不随总页数增加而创建整本书的页面节点。
 
 ## 在线阅读
 
