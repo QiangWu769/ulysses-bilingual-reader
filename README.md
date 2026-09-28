@@ -4,13 +4,21 @@ James Joyce《Ulysses》正文前五页的中英对照阅读网页，对应提�
 
 - 手机横屏时，左侧英文、右侧中文，逐段对照。
 - 支持翻页、页码选择与字号调整。
-- 竖屏时按段落上下排列，所有内容均内嵌在单个网页中。
-- 长按英文单词约半秒，查看本句中文词义、词根词缀与词形说明；电脑可直接点击。
-- 顶部“查词”支持键盘输入。内置 750 条词形与缩写笔记，覆盖当前五页；未收录词可打开外部词典。
+- 竖屏时按段落上下排列。
+- 长按英文单词约半秒，直接加载在线词义、构词与词源；电脑可直接点击。
+- 顶部“查词”支持任意英文单词、前缀与后缀（例如 `unbelievable`、`un-`、`-able`），查询范围不受当前五页限制。
+- 词源中提到的英语词素与词典明确标注的原形可以继续点查，并可返回上一个词。
+- 词义与词源分栏展示。中文未收录时显示英文原文；没有词源时明确提示，不自动猜测拆词。
 
-词库为自行编写的 AI 辅助学习笔记，不是完整商业字典。词形变化、合成词与历史词源分别说明；不对未知词自动猜测词根。部分历史词源核对自 [Etymonline](https://www.etymonline.com/)，对应词条附直接来源链接。其他词条提供 Etymonline 搜索与 Wiktionary 入口；只有打开这些链接才需访问外部词典。
+## 在线词典
 
-若干少见词核对参考：[debag](https://www.collinsdictionary.com/us/dictionary/english/debag)、[halm](https://www.collinsdictionary.com/dictionary/english/halm)、[breeks](https://dsl.ac.uk/entry/snd/breek_n1)、[bowsy](https://en.wiktionary.org/wiki/bowsy)。
+网页直接通过 [MediaWiki Action API](https://www.mediawiki.org/wiki/API:Parsing_wikitext) 查询英语和中文 Wiktionary 的英语词条，不需要账号、API 密钥或后端服务器。只发送所查词形，不发送正文或阅读历史。遵循接口限流，支持取消过期请求、超时提示和手动重试。查询过的在线词条在浏览器本地缓存最多 24 小时；“重新查询”可更新。
+
+词典文本摘录并重新排版自 **Wiktionary 贡献者**，按 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) 使用，卡片内提供各条来源链接。多词源分别保留；词素按钮表示原词源中提及，不将所有关联词硬拼成构词公式。词典没有收录的词、专名或造词可能查不到；可打开完整 Wiktionary 或 Etymonline 补充查询。
+
+前五页的中文阅读笔记仅作为“本书中文提示”保留，不充当在线词典结果。后续增加正文不会限制在线查词范围。
+
+实现分为 `dictionary-parser.js`（提取词源与释义）、`dictionary-client.js`（联网与缓存）、`reader.js`（阅读交互）。接口只提取纯文本，不把外部 HTML 插入页面。相关规范：[跨域访问](https://www.mediawiki.org/wiki/API:Cross-site_requests)、[API 使用规范](https://www.mediawiki.org/wiki/API:Etiquette)、[Wiktionary 许可](https://en.wiktionary.org/wiki/Wiktionary:Copyrights)。
 
 中文为 AI 辅助译文，仅供对照阅读。英文依据 Lerner 2016 版的用户提供 PDF。
 

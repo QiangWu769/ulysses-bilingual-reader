@@ -1,0 +1,349 @@
+'use strict';
+const $ = id => document.getElementById(id);
+const pages = JSON.parse($('reader-data').textContent);
+const contextNotes = JSON.parse($('context-data').textContent);
+const normaliseWord = value => value.trim().toLowerCase().replace(/[’‘]/g, "'");
+let queryController = null, querySequence = 0, currentQuery = '', lookupHistory = [];
+let pageIndex = 0, fontSize = 18, activeWord = null, press = null, returnFocus = null;
+let lastPointerType = '', ignoreClickUntil = 0;
+const dialog = $('lookup-dialog');
+try {
+  const stored = Number(localStorage.getItem('ulysses-reader-font'));
+  if (stored >= 16 && stored <= 28) fontSize = stored;
+} catch (e) {}
+pages.forEach((page, i) => {
+  const option = document.createElement('option');
+  option.value = i;
+  option.textContent = `正文 ${i + 1} / ${pages.length}`;
+  $('page').append(option);
+});
+function updateFont() {
+  document.documentElement.style.setProperty('--text-size', fontSize + 'px');
+  $('size').textContent = fontSize;
+  $('smaller').disabled = fontSize <= 16;
+  $('larger').disabled = fontSize >= 28;
+  try { localStorage.setItem('ulysses-reader-font', fontSize); } catch (e) {}
+}
+function appendEnglish(element, text) {
+  const token = /\b(?:[A-Za-z]\.){2,}|[A-Za-z]+(?:[’'-][A-Za-z]+)*/g;
+  let offset = 0;
+  for (const match of text.matchAll(token)) {
+    element.append(document.createTextNode(text.slice(offset, match.index)));
+    const word = document.createElement('span');
+    word.className = 'word';
+    word.dataset.word = normaliseWord(match[0]);
+    word.textContent = match[0];
+    element.append(word);
+    offset = match.index + match[0].length;
+  }
+  element.append(document.createTextNode(text.slice(offset)));
+}
+function renderPage(i) {
+  cancelPress();
+  if (dialog.open) dialog.close();
+  pageIndex = Math.min(pages.length - 1, Math.max(0, i));
+  const page = pages[pageIndex];
+  const content = document.createDocumentFragment();
+  page.paragraphs.forEach(pair => {
+    const row = document.createElement('div');
+    row.className = 'pair';
+    const en = document.createElement('p');
+    en.lang = 'en';
+    appendEnglish(en, pair.en);
+    const zh = document.createElement('p');
+    zh.className = 'zh';
+    zh.lang = 'zh-CN';
+    zh.textContent = pair.zh;
+    row.append(en, zh);
+    content.append(row);
+  });
+  $('parallel').replaceChildren(content);
+  $('page').value = pageIndex;
+  $('source-page').textContent = `PDF 第 ${page.pdfPage} 页`;
+  $('prev').disabled = pageIndex === 0;
+  $('next').disabled = pageIndex === pages.length - 1;
+  document.querySelector('.intro').hidden = pageIndex !== 0;
+  $('continuation').textContent = pageIndex === pages.length - 1 ? '本次内容到此 · 正文前五页' : page.endsMidParagraph ? '本页末句接续至下一页' : '';
+  $('progress').style.width = ((pageIndex + 1) / pages.length * 100) + '%';
+  $('reading').scrollTop = 0;
+  $('announcement').textContent = `正文第 ${pageIndex + 1} 页，PDF 第 ${page.pdfPage} 页`;
+}
+function openDialog(origin) {
+  if (dialog.open) return;
+  returnFocus = origin || document.activeElement;
+  dialog.showModal();
+  // Keep the keyboard closed for a word selected in the text.
+  $('lookup-close').focus({ preventScroll: true });
+  dialog.scrollTop = 0;
+}
+function chooseTab(name, focus = false) {
+  for (const tab of ['roots', 'meaning']) {
+    const selected = tab === name;
+    $('tab-' + tab).setAttribute('aria-selected', String(selected));
+    $('tab-' + tab).tabIndex = selected ? 0 : -1;
+    $('panel-' + tab).hidden = !selected;
+  }
+  if (focus) $('tab-' + name).focus();
+}
+function makeText(tag, value, className) {
+  const node = document.createElement(tag);
+  node.textContent = value;
+  if (className) node.className = className;
+  return node;
+}
+function makeSource(url, label) {
+  const link = makeText('a', label, 'source-link');
+  link.href = url;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  return link;
+}
+function addTermButtons(container, terms, caption) {
+  const distinct = [...new Set(terms.map(term => typeof term === 'string' ? term : term.word))]
+    .filter(word => word && normaliseWord(word) !== normaliseWord(currentQuery)).slice(0, 16);
+  if (!distinct.length) return;
+  container.append(makeText('p', caption, 'terms-caption'));
+  const buttons = document.createElement('div');
+  buttons.className = 'word-terms';
+  for (const word of distinct) {
+    const button = makeText('button', word);
+    button.type = 'button';
+    button.lang = 'en';
+    button.addEventListener('click', () => showWord(word, null, { fromLink: true }));
+    buttons.append(button);
+  }
+  container.append(buttons);
+}
+function renderEtymologies(source, heading, target) {
+  if (source?.state !== 'ok') return 0;
+  let count = 0;
+  for (const etymology of source.entry.etymologies || []) {
+    if (!etymology.text) continue;
+    const section = document.createElement('section');
+    section.className = 'word-section';
+    const number = source.entry.etymologies.length > 1 ? ` ${count + 1}` : '';
+    section.append(makeText('h4', heading + number));
+    const text = makeText('p', etymology.text, source.entry.lang === 'zh' ? '' : 'original-text');
+    text.lang = source.entry.lang === 'zh' ? 'zh' : 'en';
+    section.append(text);
+    addTermButtons(section, (etymology.terms || []).filter(term => term.language === 'en'), '词源中提到 · 点词继续查');
+    section.append(makeSource(source.entry.sourceUrl, '查看这一词条的来源 ↗'));
+    target.append(section);
+    count++;
+  }
+  return count;
+}
+function renderDefinitions(source, heading, target) {
+  target.replaceChildren();
+  if (source?.state !== 'ok' || !source.entry.definitions?.length) return false;
+  const section = document.createElement('section');
+  section.className = 'word-section';
+  section.append(makeText('h4', heading));
+  const list = document.createElement('ol');
+  for (const definition of source.entry.definitions.slice(0, 12)) {
+    const prefix = definition.partOfSpeech ? `${definition.partOfSpeech} · ` : '';
+    const item = makeText('li', prefix + definition.text);
+    item.lang = source.entry.lang === 'zh' ? 'zh' : 'en';
+    list.append(item);
+  }
+  section.append(list);
+  if (source.entry.definitions.length > 12) section.append(makeText('p', '此处显示前 12 条释义，其余可查看完整词条。', 'terms-caption'));
+  target.append(section);
+  return true;
+}
+function displayOnlineResult(result) {
+  const sources = [result.en, result.zh, result.lemma].filter(Boolean);
+  const errors = sources.filter(source => source.state === 'error');
+  const successes = sources.filter(source => source.state === 'ok');
+  $('lookup-refresh').disabled = false;
+  if (errors.length) {
+    $('lookup-status').textContent = `${successes.length ? '已显示可用结果。' : ''}${errors[0].error?.message || '在线词典暂时无法连接，请重试。'}`;
+  } else if (!successes.length) {
+    $('lookup-status').textContent = '在线词典未收录这个词形，请检查拼写或查询原形。';
+  } else {
+    $('lookup-status').textContent = successes.every(source => source.cached) ? '在线词典缓存 · 24 小时内可复用，点击重新查询可更新' : '在线查询完成 · 维基词典';
+  }
+  const primary = result.en.state === 'ok' ? result.en.entry : result.zh.state === 'ok' ? result.zh.entry : null;
+  $('lookup-lemma').textContent = primary ? `词条：${primary.title} · 词典原文节选` : '可通过下方链接打开完整词典查询';
+  $('lookup-roots').replaceChildren();
+  let roots = renderEtymologies(result.zh, '中文词源', $('lookup-roots'));
+  roots += renderEtymologies(result.en, '英文构词与词源', $('lookup-roots'));
+  roots += renderEtymologies(result.lemma, `原形 ${result.lemma?.entry?.title || ''} 的词源`, $('lookup-roots'));
+  if (!roots) {
+    $('lookup-roots').append(makeText('p', errors.length && !successes.length ? '连接恢复后将显示在线词根词缀与词源。' : '当前词条未提供词源说明。可切换到“词义”，或继续查询原形。', 'lookup-empty'));
+  }
+  $('lookup-lemmas').replaceChildren();
+  if (result.en.state === 'ok') addTermButtons($('lookup-lemmas'), result.en.entry.lemmaCandidates || [], '词典标注的原形 · 点词继续查');
+  let hasZh = renderDefinitions(result.zh, '中文释义', $('lookup-zh-definitions'));
+  if (!hasZh && result.en.state === 'ok' && result.en.entry.chineseTranslations?.length) {
+    const section = document.createElement('section');
+    section.className = 'word-section';
+    section.append(makeText('h4', '中文译词 · 来自英文词条'));
+    for (const translation of result.en.entry.chineseTranslations) {
+      section.append(makeText('p', translation.terms.join(' / ')));
+      if (translation.sense) section.append(makeText('p', translation.sense, 'terms-caption'));
+    }
+    section.append(makeSource(result.en.entry.sourceUrl, '查看中文译词来源 ↗'));
+    $('lookup-zh-definitions').append(section);
+    hasZh = true;
+  }
+  const hasEn = renderDefinitions(result.en, '英文释义', $('lookup-en-definitions'));
+  if (!hasZh) $('lookup-zh-definitions').append(makeText('p', result.zh.state === 'error' ? '中文词典暂时无法连接。' : '中文词典暂未提供此词的释义。', 'lookup-empty'));
+  if (!hasEn) $('lookup-en-definitions').append(makeText('p', result.en.state === 'error' ? '英文词典暂时无法连接。' : '英文词典暂未提供此词形的释义。', 'lookup-empty'));
+  if (result.en.state === 'ok') $('lookup-wiktionary').href = result.en.entry.sourceUrl;
+  if (result.zh.state === 'ok') $('lookup-zh-source').href = result.zh.entry.sourceUrl;
+}
+async function showWord(raw, element = null, options = {}) {
+  const query = ++querySequence;
+  if (queryController) queryController.abort();
+  let term;
+  try { term = UlyssesOnlineDictionary.normaliseTerm(raw); } catch (e) { term = ''; }
+  if (!term) {
+    $('lookup-entry').hidden = true;
+    $('lookup-welcome').hidden = false;
+    $('lookup-refresh').hidden = true;
+    $('lookup-status').textContent = '请输入一个英文单词或词缀，例如 unbelievable、un-、-able。';
+    openDialog(element ? $('reading') : $('lookup-open'));
+    return;
+  }
+  queryController = new AbortController();
+  if (options.fromLink && currentQuery) lookupHistory.push(currentQuery);
+  else if (!options.back && !options.refresh) lookupHistory = [];
+  currentQuery = term;
+  if (activeWord) activeWord.classList.remove('is-active');
+  activeWord = element;
+  if (activeWord) activeWord.classList.add('is-active');
+  $('lookup-input').value = term;
+  $('lookup-welcome').hidden = true;
+  $('lookup-entry').hidden = false;
+  $('lookup-word').textContent = term;
+  $('lookup-lemma').textContent = '正在加载在线词条…';
+  $('lookup-status').textContent = '正在查询维基词典…';
+  $('lookup-refresh').hidden = false;
+  $('lookup-refresh').disabled = true;
+  $('lookup-back').hidden = lookupHistory.length === 0;
+  $('lookup-back').textContent = lookupHistory.length ? `‹ 返回 ${lookupHistory.at(-1)}` : '‹ 返回上个词';
+  $('lookup-roots').replaceChildren(makeText('p', '正在获取词根词缀与词源…', 'lookup-empty'));
+  $('lookup-lemmas').replaceChildren();
+  $('lookup-zh-definitions').replaceChildren();
+  $('lookup-en-definitions').replaceChildren();
+  const context = contextNotes[normaliseWord(term)];
+  $('lookup-context').hidden = typeof context !== 'string';
+  $('lookup-context-text').textContent = typeof context === 'string' ? context : '';
+  $('lookup-wiktionary').href = 'https://en.wiktionary.org/wiki/' + encodeURIComponent(term.replace(/ /g, '_')) + '#English';
+  $('lookup-zh-source').href = 'https://zh.wiktionary.org/wiki/' + encodeURIComponent(term.replace(/ /g, '_')) + '#英语';
+  $('lookup-etymonline').href = 'https://www.etymonline.com/search?q=' + encodeURIComponent(term);
+  if (!options.refresh) chooseTab(/^-|-$/.test(term) ? 'meaning' : 'roots');
+  openDialog(element ? $('reading') : $('lookup-open'));
+  if (options.fromLink || options.back) $('lookup-close').focus({ preventScroll: true });
+  dialog.scrollTop = 0;
+  try {
+    const result = await UlyssesOnlineDictionary.lookupWord(term, { signal: queryController.signal, refresh: !!options.refresh });
+    if (query !== querySequence || !dialog.open) return;
+    displayOnlineResult(result);
+  } catch (error) {
+    if (query !== querySequence || error.name === 'AbortError' || !dialog.open) return;
+    $('lookup-status').textContent = '在线词典暂时无法连接，请重新查询。';
+    $('lookup-lemma').textContent = '查询未完成';
+    $('lookup-roots').replaceChildren(makeText('p', '暂时无法取得词源数据。', 'lookup-empty'));
+    $('lookup-refresh').disabled = false;
+  }
+}
+
+function cancelPress() {
+  if (press) clearTimeout(press.timer);
+  press = null;
+}
+$('parallel').addEventListener('pointerdown', event => {
+  cancelPress();
+  lastPointerType = event.pointerType;
+  if (!event.isPrimary || event.button !== 0) return;
+  const word = event.target.closest('.word');
+  if (!word) return;
+  const started = { id: event.pointerId, x: event.clientX, y: event.clientY, word, timer: null };
+  started.timer = setTimeout(() => {
+    if (press !== started) return;
+    press = null;
+    ignoreClickUntil = Date.now() + 900;
+    showWord(word.textContent, word);
+  }, 500);
+  press = started;
+}, { passive: true });
+document.addEventListener('pointerdown', event => {
+  if (press && event.pointerId !== press.id) cancelPress();
+}, { passive: true });
+document.addEventListener('pointermove', event => {
+  if (press && event.pointerId === press.id && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 10) cancelPress();
+}, { passive: true });
+document.addEventListener('pointerup', cancelPress, { passive: true });
+document.addEventListener('pointercancel', cancelPress, { passive: true });
+$('reading').addEventListener('scroll', cancelPress, { passive: true });
+window.addEventListener('blur', cancelPress);
+document.addEventListener('visibilitychange', cancelPress);
+$('parallel').addEventListener('contextmenu', event => {
+  if (event.target.closest('.word')) event.preventDefault();
+});
+$('parallel').addEventListener('click', event => {
+  const word = event.target.closest('.word');
+  if (!word || Date.now() < ignoreClickUntil) return;
+  const pointerType = event.pointerType || lastPointerType;
+  if (pointerType === 'touch' || pointerType === 'pen') return;
+  showWord(word.textContent, word);
+});
+$('lookup-open').addEventListener('click', () => {
+  $('lookup-welcome').hidden = false;
+  $('lookup-entry').hidden = true;
+  $('lookup-input').value = '';
+  $('lookup-status').textContent = '';
+  $('lookup-refresh').hidden = true;
+  lookupHistory = [];
+  openDialog($('lookup-open'));
+});
+$('lookup-close').addEventListener('click', () => dialog.close());
+let backdropPress = false;
+dialog.addEventListener('pointerdown', event => { backdropPress = event.target === dialog; });
+dialog.addEventListener('click', event => {
+  const rect = dialog.getBoundingClientRect();
+  const outside = event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom;
+  if (backdropPress && event.target === dialog && outside) dialog.close();
+  backdropPress = false;
+});
+dialog.addEventListener('close', () => {
+  cancelPress();
+  querySequence++;
+  if (queryController) queryController.abort();
+  if (activeWord) activeWord.classList.remove('is-active');
+  activeWord = null;
+  if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+});
+$('lookup-form').addEventListener('submit', event => {
+  event.preventDefault();
+  showWord($('lookup-input').value);
+  $('lookup-input').blur();
+  $('lookup-close').focus({ preventScroll: true });
+});
+$('lookup-refresh').addEventListener('click', () => showWord(currentQuery, null, { refresh: true }));
+$('lookup-back').addEventListener('click', () => {
+  const previous = lookupHistory.pop();
+  if (previous) showWord(previous, null, { back: true });
+});
+for (const name of ['roots', 'meaning']) {
+  $('tab-' + name).addEventListener('click', () => chooseTab(name));
+  $('tab-' + name).addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    chooseTab(event.key === 'Home' ? 'roots' : event.key === 'End' ? 'meaning' : name === 'roots' ? 'meaning' : 'roots', true);
+  });
+}
+$('prev').addEventListener('click', () => renderPage(pageIndex - 1));
+$('next').addEventListener('click', () => renderPage(pageIndex + 1));
+$('page').addEventListener('change', event => renderPage(Number(event.target.value)));
+$('smaller').addEventListener('click', () => { fontSize = Math.max(16, fontSize - 1); updateFont(); });
+$('larger').addEventListener('click', () => { fontSize = Math.min(28, fontSize + 1); updateFont(); });
+document.addEventListener('keydown', event => {
+  if (dialog.open || event.target.closest('select,input,textarea,button') || event.ctrlKey || event.altKey || event.metaKey) return;
+  if (event.key === 'ArrowRight') { event.preventDefault(); renderPage(pageIndex + 1); }
+  if (event.key === 'ArrowLeft') { event.preventDefault(); renderPage(pageIndex - 1); }
+});
+updateFont();
+renderPage(0);
