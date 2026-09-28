@@ -11,7 +11,7 @@ const canSpeak = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in wi
 // Played inside the tap so mobile browsers allow the recording that arrives after the network request.
 const SILENT_WAV = 'data:audio/wav;base64,UklGRvQHAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YdAHAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==';
 const player = new Audio();
-let voice = null, speakingEls = [], speakToken = 0, accent = 'us';
+let voice = null, speakingEls = [], speakToken = 0, accent = 'us', aiAbort = null, toastTimer = 0;
 try { if (localStorage.getItem('ulysses-reader-accent') === 'uk') accent = 'uk'; } catch (e) {}
 function pickVoice() {
   const english = speechSynthesis.getVoices().filter(item => /^en/i.test(item.lang));
@@ -22,8 +22,17 @@ function markSpeaking(els) {
   speakingEls = els.filter(Boolean);
   speakingEls.forEach(el => el.classList.add('speaking'));
 }
+function showToast(message) {
+  const toast = $('toast');
+  toast.textContent = message;
+  toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toast.hidden = true; }, 4500);
+}
 function stopSpeaking() {
   speakToken++;
+  if (aiAbort) aiAbort.abort();
+  aiAbort = null;
   player.pause();
   if (canSpeak) speechSynthesis.cancel();
   markSpeaking([]);
@@ -66,14 +75,9 @@ function speak(text, marks = [], preferred = accent) {
 }
 const DOG_ICON = '<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false"><g fill="#fff" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"><path d="M6.4 8.2C3.7 8.4 2.9 13 4.6 15.6 6.3 15.2 7 12.2 7.6 10z"/><path d="M17.6 8.2C20.3 8.4 21.1 13 19.4 15.6 17.7 15.2 17 12.2 16.4 10z"/><circle cx="12" cy="12.6" r="6.6"/></g><g fill="currentColor"><circle cx="9.5" cy="11.8" r=".95"/><circle cx="14.5" cy="11.8" r=".95"/><ellipse cx="12" cy="14.6" rx="1.6" ry="1.15"/></g><path d="M12 15.7v1.1m0 0c-.7.9-1.8.9-2.3.3m2.3-.3c.7.9 1.8.9 2.3.3" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>';
 // Reads a whole paragraph sentence by sentence (long single utterances get cut off in some browsers). Click again to stop.
-function speakParagraph(text, marks) {
-  if (!canSpeak) return;
-  const wasReading = marks.some(el => speakingEls.includes(el));
-  stopSpeaking();
-  if (wasReading) return;
-  const token = speakToken;
-  markSpeaking(marks);
-  const plain = text.replace(/\s+/g, ' ').trim();
+function speakSentences(plain, token) {
+  if (token !== speakToken) return;
+  if (!canSpeak) { markSpeaking([]); return; }
   const sentences = plain.match(/[^.!?…]+(?:[.!?…]+["'”’)\]]*|$)\s*/g) || [plain];
   sentences.forEach((sentence, index) => {
     const utterance = new SpeechSynthesisUtterance(sentence.trim());
@@ -85,6 +89,42 @@ function speakParagraph(text, marks) {
     utterance.onerror = event => { if (event.error !== 'canceled' && event.error !== 'interrupted') finish(); };
     speechSynthesis.speak(utterance);
   });
+}
+async function speakWithAI(plain, token, marks) {
+  const controller = new AbortController();
+  aiAbort = controller;
+  const timeout = setTimeout(() => controller.abort(), 45000);
+  marks.forEach(el => el.classList.add('loading'));
+  try {
+    const blob = await UlyssesAIVoice.synthesize(plain, { signal: controller.signal });
+    if (token !== speakToken) return;
+    const url = URL.createObjectURL(blob);
+    try { await playRecording(url, token); } finally { URL.revokeObjectURL(url); }
+  } catch (error) {
+    if (token !== speakToken) return;
+    showToast(error && error.name === 'AbortError' ? 'AI 语音响应太慢，已改用系统语音。' : error && error.kind ? UlyssesAIVoice.describe(error) : 'AI 语音播放失败，已改用系统语音。');
+    speakSentences(plain, token);
+  } finally {
+    clearTimeout(timeout);
+    marks.forEach(el => el.classList.remove('loading'));
+    if (aiAbort === controller) aiAbort = null;
+  }
+}
+// Reads a whole paragraph: Gemini voice when enabled, otherwise (or on any failure) the browser voice sentence by sentence.
+function speakParagraph(text, marks) {
+  const wasReading = marks.some(el => speakingEls.includes(el));
+  stopSpeaking();
+  if (wasReading) return;
+  const token = speakToken;
+  markSpeaking(marks);
+  const plain = text.replace(/\s+/g, ' ').trim();
+  if (UlyssesAIVoice.isReady()) {
+    player.src = SILENT_WAV;
+    player.play().catch(() => {});
+    speakWithAI(plain, token, marks);
+    return;
+  }
+  speakSentences(plain, token);
 }
 function renderPronunciation(info, query) {
   const audio = info?.audio || {};
@@ -169,7 +209,7 @@ function renderPage(i) {
     const en = document.createElement('p');
     en.lang = 'en';
     appendEnglish(en, pair.en);
-    if (canSpeak) {
+    if (canSpeak || UlyssesAIVoice.isReady()) {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'para-speak';
@@ -477,10 +517,65 @@ $('page').addEventListener('change', event => renderPage(Number(event.target.val
 $('smaller').addEventListener('click', () => { fontSize = Math.max(16, fontSize - 1); updateFont(); });
 $('larger').addEventListener('click', () => { fontSize = Math.min(28, fontSize + 1); updateFont(); });
 document.addEventListener('keydown', event => {
-  if (dialog.open || event.target.closest('select,input,textarea,button') || event.ctrlKey || event.altKey || event.metaKey) return;
+  if (document.querySelector('dialog[open]') || event.target.closest('select,input,textarea,button') || event.ctrlKey || event.altKey || event.metaKey) return;
   if (event.key === 'ArrowRight') { event.preventDefault(); renderPage(pageIndex + 1); }
   if (event.key === 'ArrowLeft') { event.preventDefault(); renderPage(pageIndex - 1); }
 });
+const aiDialog = $('ai-dialog');
+function fillAiForm() {
+  const config = UlyssesAIVoice.getConfig();
+  $('ai-enabled').checked = config.enabled;
+  $('ai-key').value = config.apiKey;
+  $('ai-model').value = config.model;
+  $('ai-voice').value = config.voice;
+  $('ai-status').textContent = '';
+}
+function rerenderKeepScroll() {
+  const top = $('reading').scrollTop;
+  renderPage(pageIndex);
+  $('reading').scrollTop = top;
+}
+function saveAiForm() {
+  const apiKey = $('ai-key').value.trim();
+  const model = $('ai-model').value.trim() || 'gemini-3.8-flash-tts';
+  if (!/^[A-Za-z0-9._-]+$/.test(model)) { $('ai-status').textContent = '模型名只能包含字母、数字、点、横线和下划线。'; return false; }
+  if ($('ai-enabled').checked && apiKey.length < 10) { $('ai-status').textContent = '请先粘贴 API 密钥再启用。'; return false; }
+  UlyssesAIVoice.setConfig({ enabled: $('ai-enabled').checked, apiKey, model, voice: $('ai-voice').value });
+  return true;
+}
+$('ai-settings-open').addEventListener('click', () => {
+  toggleThemeMenu(false);
+  fillAiForm();
+  aiDialog.showModal();
+  $('ai-enabled').focus({ preventScroll: true });
+});
+$('ai-close').addEventListener('click', () => aiDialog.close());
+$('ai-form').addEventListener('submit', event => {
+  event.preventDefault();
+  if (saveAiForm()) { $('ai-status').textContent = '已保存。下次点小狗按钮就会使用这些设置。'; rerenderKeepScroll(); }
+});
+$('ai-clear').addEventListener('click', () => {
+  UlyssesAIVoice.setConfig({ apiKey: '', enabled: false });
+  fillAiForm();
+  $('ai-status').textContent = '密钥已从这台设备清除。';
+  rerenderKeepScroll();
+});
+$('ai-test').addEventListener('click', async () => {
+  if (!saveAiForm()) return;
+  if (!UlyssesAIVoice.isReady()) { $('ai-status').textContent = '请勾选“启用”并填写密钥。'; return; }
+  $('ai-status').textContent = '正在生成试听…';
+  player.src = SILENT_WAV;
+  player.play().catch(() => {});
+  try {
+    const blob = await UlyssesAIVoice.synthesize('Stately, plump Buck Mulligan came from the stairhead.');
+    const url = URL.createObjectURL(blob);
+    stopSpeaking();
+    try { $('ai-status').textContent = '正在播放试听。'; await playRecording(url, speakToken); $('ai-status').textContent = '试听完成，设置可用。'; } finally { URL.revokeObjectURL(url); }
+  } catch (error) {
+    $('ai-status').textContent = error && error.kind ? UlyssesAIVoice.describe(error).replace('，已改用系统语音', '') : '试听播放失败，请检查浏览器是否允许播放声音。';
+  }
+});
+aiDialog.addEventListener('close', () => { stopSpeaking(); });
 $('theme-open').addEventListener('click', () => toggleThemeMenu(themeMenu.hidden));
 themeMenu.addEventListener('click', event => {
   const button = event.target.closest('[data-theme-choice]');
