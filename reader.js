@@ -1,6 +1,24 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const pages = JSON.parse($('reader-data').textContent);
+const chapters = JSON.parse($('chapter-data').textContent);
+// Chapter breaks may fall inside a PDF page. Keep source indices intact for paragraph audio.
+const readingPages = [];
+chapters.forEach((chapter, chapterIndex) => {
+  const next = chapters[chapterIndex + 1];
+  chapter.firstView = readingPages.length;
+  for (let sourcePage = chapter.startPage; sourcePage < pages.length; sourcePage++) {
+    if (next && sourcePage > next.startPage) break;
+    const startParagraph = sourcePage === chapter.startPage ? chapter.startParagraph : 0;
+    const endParagraph = next && sourcePage === next.startPage ? next.startParagraph : pages[sourcePage].paragraphs.length;
+    if (endParagraph > startParagraph) readingPages.push({ chapterIndex, sourcePage, startParagraph, endParagraph });
+    if (next && sourcePage === next.startPage) break;
+  }
+  chapter.lastView = readingPages.length - 1;
+});
+let selectedChapter = -1;
+const chapterDialog = $('chapter-dialog');
+let chapterJumped = false;
 const contextNotes = JSON.parse($('context-data').textContent);
 const normaliseWord = value => value.trim().toLowerCase().replace(/[’‘]/g, "'");
 let queryController = null, querySequence = 0, currentQuery = '', lookupHistory = [];
@@ -154,12 +172,66 @@ try {
   const stored = Number(localStorage.getItem('ulysses-reader-font'));
   if (stored >= 16 && stored <= 28) fontSize = stored;
 } catch (e) {}
-pages.forEach((page, i) => {
-  const option = document.createElement('option');
-  option.value = i;
-  option.textContent = `正文 ${i + 1} / ${pages.length}`;
-  $('page').append(option);
-});
+function updateChapterNavigation(chapterIndex) {
+  if (selectedChapter === chapterIndex) return;
+  selectedChapter = chapterIndex;
+  const chapter = chapters[chapterIndex];
+  const options = document.createDocumentFragment();
+  for (let i = chapter.firstView; i <= chapter.lastView; i++) {
+    const option = document.createElement('option');
+    option.value = i;
+    option.textContent = `本章 ${i - chapter.firstView + 1} / ${chapter.lastView - chapter.firstView + 1}`;
+    options.append(option);
+  }
+  $('page').replaceChildren(options);
+  $('current-chapter').textContent = `第 ${chapter.id} 章 · ${chapter.zh}`;
+  $('current-chapter').title = `${chapter.zh} · ${chapter.en}`;
+  document.title = `${chapter.zh} · 尤利西斯中英对照`;
+  for (const button of $('chapter-list').querySelectorAll('[data-chapter-index]')) {
+    const active = Number(button.dataset.chapterIndex) === chapterIndex;
+    if (active) button.setAttribute('aria-current', 'location');
+    else button.removeAttribute('aria-current');
+    button.querySelector('.chapter-state').textContent = active ? '正在阅读' : '';
+  }
+}
+function buildChapterDirectory() {
+  let part = 0, list;
+  for (const [chapterIndex, chapter] of chapters.entries()) {
+    if (chapter.part !== part) {
+      part = chapter.part;
+      $('chapter-list').append(makeText('h3', part === 1 ? '第一部' : '第二部'));
+      list = document.createElement('ol');
+      $('chapter-list').append(list);
+    }
+    const item = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'chapter-link';
+    button.dataset.chapterIndex = chapterIndex;
+    button.append(makeText('span', String(chapter.id).padStart(2, '0'), 'chapter-number'));
+    const name = document.createElement('span');
+    name.append(makeText('span', chapter.zh, 'chapter-name'));
+    const english = makeText('span', chapter.en, 'chapter-en');
+    english.lang = 'en';
+    name.append(english);
+    const meta = document.createElement('span');
+    meta.className = 'chapter-meta';
+    const firstPDF = pages[readingPages[chapter.firstView].sourcePage].pdfPage;
+    const lastPDF = pages[readingPages[chapter.lastView].sourcePage].pdfPage;
+    meta.append(makeText('span', `PDF ${firstPDF}–${lastPDF}`));
+    if (chapter.incomplete) meta.append(makeText('span', '部分收录 · 未完'));
+    meta.append(makeText('span', '', 'chapter-state'));
+    button.append(name, meta);
+    button.addEventListener('click', () => {
+      chapterJumped = true;
+      chapterDialog.close();
+      renderPage(chapter.firstView);
+    });
+    item.append(button);
+    list.append(item);
+  }
+  $('chapter-list').append(makeText('p', '第 11 章尚未收录完整，第 12–18 章不在当前 PDF 中。章名采用通行的荷马式标题；PDF 页内的章节交界已按段落分开。', 'chapter-scope'));
+}
 function updateFont() {
   document.documentElement.style.setProperty('--text-size', fontSize + 'px');
   $('size').textContent = fontSize;
@@ -185,11 +257,15 @@ function renderPage(i) {
   cancelPress();
   stopSpeaking();
   if (dialog.open) dialog.close();
-  pageIndex = Math.min(pages.length - 1, Math.max(0, i));
-  const page = pages[pageIndex];
+  pageIndex = Math.min(readingPages.length - 1, Math.max(0, i));
+  const view = readingPages[pageIndex];
+  const chapter = chapters[view.chapterIndex];
+  const page = pages[view.sourcePage];
+  updateChapterNavigation(view.chapterIndex);
   const content = document.createDocumentFragment();
-  const pageNo = pageIndex;
-  page.paragraphs.forEach((pair, paragraphNo) => {
+  const pageNo = view.sourcePage;
+  page.paragraphs.slice(view.startParagraph, view.endParagraph).forEach((pair, offset) => {
+    const paragraphNo = view.startParagraph + offset;
     const row = document.createElement('div');
     row.className = 'pair';
     const en = document.createElement('p');
@@ -216,15 +292,26 @@ function renderPage(i) {
   $('page').value = pageIndex;
   $('source-page').textContent = `PDF 第 ${page.pdfPage} 页`;
   $('prev').disabled = pageIndex === 0;
-  $('next').disabled = pageIndex === pages.length - 1;
+  $('next').disabled = pageIndex === readingPages.length - 1;
+  const first = pageIndex === chapter.firstView;
+  const last = pageIndex === chapter.lastView;
   const intro = document.querySelector('.intro');
-  intro.hidden = !page.sectionStart && pageIndex !== 0;
-  intro.querySelector('h2').textContent = `— ${page.heading} —`;
-  $('continuation').textContent = pageIndex === pages.length - 1 ? `本次内容到此 · 正文前 ${pages.length} 页` : page.endsMidParagraph ? '本页末句接续至下一页' : '';
+  intro.hidden = !first;
+  $('chapter-part').textContent = `${chapter.part === 1 ? '第一部' : '第二部'} · 第 ${chapter.id} 章`;
+  $('chapter-title').textContent = chapter.zh;
+  $('chapter-subtitle').textContent = chapter.en + (chapter.incomplete ? ' · 部分收录' : '');
+  $('prev').textContent = first && pageIndex > 0 ? '‹ 上一章' : '‹ 上一页';
+  $('prev').setAttribute('aria-label', first && pageIndex > 0 ? '上一章末页' : '上一页');
+  $('next').textContent = last && pageIndex < readingPages.length - 1 ? '下一章 ›' : '下一页 ›';
+  $('next').setAttribute('aria-label', last && pageIndex < readingPages.length - 1 ? '下一章' : '下一页');
+  $('continuation').textContent = last
+    ? chapter.incomplete ? '当前 PDF 收录至此 · 第 11 章尚未结束'
+      : `第 ${chapter.id} 章完 · 下一章：${chapters[view.chapterIndex + 1].zh}`
+    : page.endsMidParagraph ? '本页末句接续至下一页' : '';
   $('parallel').classList.toggle('opening', pageIndex === 0);
-  $('progress').style.width = ((pageIndex + 1) / pages.length * 100) + '%';
+  $('progress').style.width = ((pageIndex - chapter.firstView + 1) / (chapter.lastView - chapter.firstView + 1) * 100) + '%';
   $('reading').scrollTop = 0;
-  $('announcement').textContent = `正文第 ${pageIndex + 1} 页，PDF 第 ${page.pdfPage} 页`;
+  $('announcement').textContent = `第 ${chapter.id} 章，${chapter.zh}，本章第 ${pageIndex - chapter.firstView + 1} 页，PDF 第 ${page.pdfPage} 页`;
 }
 function openDialog(origin) {
   if (dialog.open) return;
@@ -497,6 +584,27 @@ for (const name of ['roots', 'meaning']) {
     chooseTab(event.key === 'Home' ? 'roots' : event.key === 'End' ? 'meaning' : name === 'roots' ? 'meaning' : 'roots', true);
   });
 }
+$('chapter-open').addEventListener('click', () => {
+  cancelPress();
+  stopSpeaking();
+  toggleThemeMenu(false);
+  chapterJumped = false;
+  chapterDialog.showModal();
+  const current = $('chapter-list').querySelector('[aria-current=location]');
+  current?.focus({ preventScroll: true });
+  current?.scrollIntoView({ block: 'center' });
+});
+$('chapter-close').addEventListener('click', () => chapterDialog.close());
+chapterDialog.addEventListener('close', () => {
+  (chapterJumped ? $('reading') : $('chapter-open')).focus({ preventScroll: true });
+});
+let chapterBackdropPress = false;
+chapterDialog.addEventListener('pointerdown', event => { chapterBackdropPress = event.target === chapterDialog; });
+chapterDialog.addEventListener('click', event => {
+  const rect = chapterDialog.getBoundingClientRect();
+  if (chapterBackdropPress && event.target === chapterDialog && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) chapterDialog.close();
+  chapterBackdropPress = false;
+});
 $('prev').addEventListener('click', () => renderPage(pageIndex - 1));
 $('next').addEventListener('click', () => renderPage(pageIndex + 1));
 $('page').addEventListener('change', event => renderPage(Number(event.target.value)));
@@ -522,5 +630,6 @@ document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && !themeMenu.hidden) { toggleThemeMenu(false); $('theme-open').focus({ preventScroll: true }); }
 });
 applyTheme(document.documentElement.dataset.theme);
+buildChapterDirectory();
 updateFont();
 renderPage(0);
