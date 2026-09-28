@@ -8,31 +8,84 @@ let pageIndex = 0, fontSize = 18, activeWord = null, press = null, returnFocus =
 let lastPointerType = '', ignoreClickUntil = 0;
 const dialog = $('lookup-dialog');
 const canSpeak = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window;
-let voice = null, speakingEls = [];
+// Played inside the tap so mobile browsers allow the recording that arrives after the network request.
+const SILENT_WAV = 'data:audio/wav;base64,UklGRvQHAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YdAHAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==';
+const player = new Audio();
+let voice = null, speakingEls = [], speakToken = 0, accent = 'us';
+try { if (localStorage.getItem('ulysses-reader-accent') === 'uk') accent = 'uk'; } catch (e) {}
 function pickVoice() {
   const english = speechSynthesis.getVoices().filter(item => /^en/i.test(item.lang));
   voice = english.find(item => /^en[-_]US$/i.test(item.lang) && !/compact/i.test(item.name)) || english[0] || null;
 }
-function speak(text, ...marks) {
-  const spoken = text.replace(/^-+|-+$/g, '').trim();
-  if (!canSpeak || !spoken) return;
-  speechSynthesis.cancel();
+function markSpeaking(els) {
   speakingEls.forEach(el => el.classList.remove('speaking'));
-  speakingEls = marks.filter(Boolean);
-  const done = () => { speakingEls.forEach(el => el.classList.remove('speaking')); speakingEls = []; };
+  speakingEls = els.filter(Boolean);
+  speakingEls.forEach(el => el.classList.add('speaking'));
+}
+function stopSpeaking() {
+  speakToken++;
+  player.pause();
+  if (canSpeak) speechSynthesis.cancel();
+  markSpeaking([]);
+}
+function speakSynthetic(spoken, token) {
+  if (token !== speakToken) return;
+  if (!canSpeak) { markSpeaking([]); return; }
+  speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(spoken);
   utterance.lang = 'en-US';
   utterance.rate = 0.85;
   if (voice) utterance.voice = voice;
-  utterance.onstart = () => speakingEls.forEach(el => el.classList.add('speaking'));
-  utterance.onend = utterance.onerror = done;
+  utterance.onend = utterance.onerror = () => { if (token === speakToken) markSpeaking([]); };
   speechSynthesis.speak(utterance);
+}
+function playRecording(url, token) {
+  return new Promise((resolve, reject) => {
+    player.onended = () => { if (token === speakToken) markSpeaking([]); resolve(); };
+    player.onerror = () => reject(new Error('audio'));
+    player.src = url;
+    player.play().catch(reject);
+  });
+}
+// Human recording first (Free Dictionary API); the browser's built-in voice when there is none.
+function speak(text, marks = [], preferred = accent) {
+  const spoken = text.replace(/^-+|-+$/g, '').trim();
+  if (!spoken) return;
+  stopSpeaking();
+  const token = speakToken;
+  markSpeaking(marks);
+  if (/^-|-$/.test(text.trim())) { speakSynthetic(spoken, token); return; }
+  player.src = SILENT_WAV;
+  player.play().catch(() => {});
+  Promise.race([UlyssesPronunciation.lookup(spoken), new Promise(resolve => setTimeout(resolve, 2500, null))]).then(info => {
+    if (token !== speakToken) return;
+    const url = UlyssesPronunciation.choose(info, preferred);
+    if (!url) { speakSynthetic(spoken, token); return; }
+    return playRecording(url, token).catch(() => speakSynthetic(spoken, token));
+  });
+}
+function renderPronunciation(info, query) {
+  const audio = info?.audio || {};
+  const us = audio.us || audio.other, uk = audio.uk;
+  $('lookup-pron').hidden = !info || !(info.ipa || us || uk);
+  $('lookup-ipa').textContent = info?.ipa || '';
+  $('pron-us').hidden = !us;
+  $('pron-us').textContent = audio.us ? '美式录音' : '真人录音';
+  $('pron-uk').hidden = !uk;
+  $('lookup-pron').dataset.query = query;
 }
 if (canSpeak) {
   pickVoice();
   speechSynthesis.addEventListener('voiceschanged', pickVoice);
-  $('lookup-speak').hidden = false;
-  $('lookup-speak').addEventListener('click', () => speak(currentQuery, $('lookup-speak')));
+}
+$('lookup-speak').hidden = false;
+$('lookup-speak').addEventListener('click', () => speak(currentQuery, [$('lookup-speak')]));
+for (const [id, name] of [['pron-us', 'us'], ['pron-uk', 'uk']]) {
+  $(id).addEventListener('click', () => {
+    accent = name;
+    try { localStorage.setItem('ulysses-reader-accent', name); } catch (e) {}
+    speak(currentQuery, [$(id), $('lookup-speak')], name);
+  });
 }
 const THEMES = { paper: '#cfc6b6', sepia: '#a89272', mist: '#a9b8a6', white: '#edf1f5', night: '#0b0c0e' };
 const themeMenu = $('theme-menu');
@@ -270,6 +323,8 @@ async function showWord(raw, element = null, options = {}) {
   $('lookup-back').hidden = lookupHistory.length === 0;
   $('lookup-back').textContent = lookupHistory.length ? `‹ 返回 ${lookupHistory.at(-1)}` : '‹ 返回上个词';
   $('lookup-roots').replaceChildren(makeText('p', '正在获取词根词缀与词源…', 'lookup-empty'));
+  renderPronunciation(null, term);
+  if (!/^-|-$/.test(term)) UlyssesPronunciation.lookup(term).then(info => { if (query === querySequence && dialog.open) renderPronunciation(info, term); });
   $('lookup-lemmas').replaceChildren();
   $('lookup-zh-definitions').replaceChildren();
   $('lookup-en-definitions').replaceChildren();
@@ -332,7 +387,7 @@ $('parallel').addEventListener('contextmenu', event => {
 $('parallel').addEventListener('click', event => {
   const word = event.target.closest('.word');
   if (!word || Date.now() < ignoreClickUntil) return;
-  speak(word.textContent, word);
+  speak(word.textContent, [word]);
   const pointerType = event.pointerType || lastPointerType;
   if (pointerType === 'touch' || pointerType === 'pen') return;
   showWord(word.textContent, word);
@@ -357,6 +412,7 @@ dialog.addEventListener('click', event => {
 });
 dialog.addEventListener('close', () => {
   cancelPress();
+  stopSpeaking();
   querySequence++;
   if (queryController) queryController.abort();
   if (activeWord) activeWord.classList.remove('is-active');
