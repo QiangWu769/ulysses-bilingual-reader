@@ -78,14 +78,15 @@ function playRecording(url, token) {
   });
 }
 // Human recording first (Free Dictionary API); the browser's built-in voice when there is none.
-// Order: human recording -> browser voice.
-function speak(text, marks = [], preferred = accent) {
+// Words use the browser's built-in voice at once; recordingOnly (the 美式/英式录音 buttons) plays the dictionary's human recording instead.
+function speak(text, marks = [], preferred = accent, recordingOnly = false) {
   const spoken = text.replace(/^-+|-+$/g, '').trim();
   if (!spoken) return;
   stopSpeaking();
   const token = speakToken;
   markSpeaking(marks);
   if (/^-|-$/.test(text.trim())) { speakSynthetic(spoken, token); return; }
+  if (!recordingOnly) { speakSynthetic(spoken, token); return; }
   player.src = SILENT_WAV;
   player.play().catch(() => {});
   speakRecorded(spoken, token, preferred);
@@ -149,7 +150,7 @@ for (const [id, name] of [['pron-us', 'us'], ['pron-uk', 'uk']]) {
   $(id).addEventListener('click', () => {
     accent = name;
     try { localStorage.setItem('ulysses-reader-accent', name); } catch (e) {}
-    speak(currentQuery, [$(id), $('lookup-speak')], name);
+    speak(currentQuery, [$(id), $('lookup-speak')], name, true);
   });
 }
 const THEMES = { paper: '#cfc6b6', sepia: '#a89272', mist: '#a9b8a6', white: '#edf1f5', night: '#0b0c0e' };
@@ -572,7 +573,10 @@ $('reading').addEventListener('scroll', cancelPress, { passive: true });
 window.addEventListener('blur', cancelPress);
 document.addEventListener('visibilitychange', cancelPress);
 $('parallel').addEventListener('contextmenu', event => {
-  if (event.target.closest('.word')) event.preventDefault();
+  const word = event.target.closest('.word');
+  if (!word) return;
+  event.preventDefault();
+  if (lastPointerType === 'mouse' && !word.closest('p.selecting')) { cancelPress(); showWord(word.textContent, word); }
 });
 $('parallel').addEventListener('click', event => {
   const sentence = event.target.closest('.sent');
@@ -580,9 +584,6 @@ $('parallel').addEventListener('click', event => {
   const word = event.target.closest('.word');
   if (!word || Date.now() < ignoreClickUntil) return;
   speak(word.textContent, [word]);
-  const pointerType = event.pointerType || lastPointerType;
-  if (pointerType === 'touch' || pointerType === 'pen') return;
-  showWord(word.textContent, word);
 });
 $('lookup-open').addEventListener('click', () => {
   $('lookup-welcome').hidden = false;
