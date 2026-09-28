@@ -30,6 +30,31 @@ const canSpeak = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in wi
 const SILENT_WAV = 'data:audio/wav;base64,UklGRvQHAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YdAHAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==';
 const player = new Audio();
 let voice = null, speakingEls = [], speakToken = 0, accent = 'us', toastTimer = 0;
+// Pre-generated word clips live in audio/words/N.bin shards (see tools/generate-words.mjs); a shard is fetched on first use.
+let wordMeta = null;
+const wordShards = new Map();
+function loadWordMeta() {
+  if (!wordMeta) wordMeta = fetch('audio/words/index.json').then(response => response.ok ? response.json() : null).catch(() => null);
+  return wordMeta;
+}
+function parseShard(buffer) {
+  const headerLength = new DataView(buffer).getUint32(0, true);
+  const header = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 4, headerLength)));
+  return { header, buffer, base: 4 + headerLength };
+}
+async function loadWordClip(word) {
+  const key = UlyssesAudioKey.wordKey(word);
+  const meta = key && await loadWordMeta();
+  if (!meta || !meta.shards) return null;
+  const shard = UlyssesAudioKey.shardOf(key, meta.shards);
+  if (!wordShards.has(shard)) {
+    wordShards.set(shard, fetch('audio/words/' + shard + '.bin').then(response => response.ok ? response.arrayBuffer() : null).then(buffer => buffer && parseShard(buffer)).catch(() => null));
+  }
+  const pack = await wordShards.get(shard);
+  if (!pack) { wordShards.delete(shard); return null; }
+  const position = pack.header[key];
+  return position ? new Blob([pack.buffer.slice(pack.base + position[0], pack.base + position[0] + position[1])], { type: 'audio/mpeg' }) : null;
+}
 // Pre-generated paragraph recordings (see tools/generate-audio.mjs); the manifest lists which files exist.
 const audioNames = new Set();
 fetch('audio/manifest.json').then(response => response.ok ? response.json() : null).then(manifest => {
@@ -78,8 +103,8 @@ function playRecording(url, token) {
   });
 }
 // Human recording first (Free Dictionary API); the browser's built-in voice when there is none.
-// Order: human recording -> browser voice.
-function speak(text, marks = [], preferred = accent) {
+// Order: pre-generated word clip (same voice as the paragraphs) -> human recording -> browser voice.
+function speak(text, marks = [], preferred = accent, recordingOnly = false) {
   const spoken = text.replace(/^-+|-+$/g, '').trim();
   if (!spoken) return;
   stopSpeaking();
@@ -88,7 +113,15 @@ function speak(text, marks = [], preferred = accent) {
   if (/^-|-$/.test(text.trim())) { speakSynthetic(spoken, token); return; }
   player.src = SILENT_WAV;
   player.play().catch(() => {});
-  speakRecorded(spoken, token, preferred);
+  if (recordingOnly) { speakRecorded(spoken, token, preferred); return; }
+  Promise.race([loadWordClip(spoken), new Promise(resolve => setTimeout(resolve, 2500, null))]).then(clip => {
+    if (token !== speakToken) return;
+    if (!clip) { speakRecorded(spoken, token, preferred); return; }
+    const url = URL.createObjectURL(clip);
+    return playRecording(url, token)
+      .catch(() => { if (token === speakToken) speakRecorded(spoken, token, preferred); })
+      .finally(() => URL.revokeObjectURL(url));
+  });
 }
 function speakRecorded(spoken, token, preferred) {
   Promise.race([UlyssesPronunciation.lookup(spoken), new Promise(resolve => setTimeout(resolve, 2500, null))]).then(info => {
@@ -149,7 +182,7 @@ for (const [id, name] of [['pron-us', 'us'], ['pron-uk', 'uk']]) {
   $(id).addEventListener('click', () => {
     accent = name;
     try { localStorage.setItem('ulysses-reader-accent', name); } catch (e) {}
-    speak(currentQuery, [$(id), $('lookup-speak')], name);
+    speak(currentQuery, [$(id), $('lookup-speak')], name, true);
   });
 }
 const THEMES = { paper: '#cfc6b6', sepia: '#a89272', mist: '#a9b8a6', white: '#edf1f5', night: '#0b0c0e' };

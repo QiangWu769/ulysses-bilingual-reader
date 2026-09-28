@@ -30,6 +30,17 @@ node tools/generate-audio.mjs             # 生成全部；已生成的会跳过
 
 可选参数：`--voice en-GB-Chirp3-HD-Charon`（默认 `en-US-Chirp3-HD-Aoede`，美式女声）、`--rate 0.95`、`--concurrency 3`。生成后把 `audio/` 目录提交并推送。段落文字被修改后，对应文件名（含文本哈希）不再匹配，会自动退回其他朗读方式，重新运行脚本即可补生成。费用和免费额度以 Google 官方定价为准；密钥需要在 Google Cloud 启用 Text-to-Speech API，并建议限制为只能调用该 API。
 
+### 单词发音（同一个声音，访客无需密钥）
+
+点英文单词的发音顺序：`audio/words/` 里预生成的单词包（与段落朗读同一个声音）→ Free Dictionary 的真人录音 → 浏览器自带语音。书中 1.4 万多个不同单词（约 10 万字符）由 `tools/generate-words.mjs` 一次性生成，并按单词哈希打包成 256 个小文件（`audio/words/N.bin`，每个约几百 KB），点词时只下载对应的那一个。查词卡片里的“美式/英式录音”按钮仍播放真人录音。
+
+```
+export GOOGLE_TTS_API_KEY=你的密钥
+node tools/generate-words.mjs --dry-run     # 只统计
+node tools/generate-words.mjs               # 生成并打包；已生成的缓存在 tools/.word-cache/，可中断后继续
+node tools/generate-words.mjs --pack-only   # 不发请求，只用缓存重新打包
+```
+
 ## 在线词典
 
 网页直接通过 [MediaWiki Action API](https://www.mediawiki.org/wiki/API:Parsing_wikitext) 查询英语和中文 Wiktionary 的英语词条，不需要账号、API 密钥或后端服务器。只发送所查词形，不发送正文或阅读历史。遵循接口限流，支持取消过期请求、超时提示和手动重试。查询过的在线词条在浏览器本地缓存最多 24 小时；“重新查询”可更新。
