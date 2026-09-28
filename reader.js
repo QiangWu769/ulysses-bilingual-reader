@@ -239,7 +239,26 @@ function updateFont() {
   $('larger').disabled = fontSize >= 28;
   try { localStorage.setItem('ulysses-reader-font', fontSize); } catch (e) {}
 }
+const ABBREVIATION = /\b(?:Mr|Mrs|Ms|Dr|St|Prof|Sr|Jr|vs|etc|No)\.\s*$/;
+function splitSentences(text) {
+  const raw = text.match(/[^.!?…]+(?:[.!?…]+["'”’)\]]*|$)\s*/g);
+  if (!raw || raw.join('') !== text) return [text];
+  const merged = [];
+  for (const part of raw) {
+    if (merged.length && ABBREVIATION.test(merged[merged.length - 1])) merged[merged.length - 1] += part;
+    else merged.push(part);
+  }
+  return merged;
+}
 function appendEnglish(element, text) {
+  for (const part of splitSentences(text)) {
+    const sentence = document.createElement('span');
+    sentence.className = 'sent';
+    appendWords(sentence, part);
+    element.append(sentence);
+  }
+}
+function appendWords(element, text) {
   const token = /\b(?:[A-Za-z]\.){2,}|[A-Za-z]+(?:[’'-][A-Za-z]+)*/g;
   let offset = 0;
   for (const match of text.matchAll(token)) {
@@ -268,6 +287,8 @@ function renderPage(i) {
     const paragraphNo = view.startParagraph + offset;
     const row = document.createElement('div');
     row.className = 'pair';
+    row.dataset.page = pageNo;
+    row.dataset.paragraph = paragraphNo;
     const en = document.createElement('p');
     en.lang = 'en';
     appendEnglish(en, pair.en);
@@ -279,7 +300,21 @@ function renderPage(i) {
       button.title = '朗读本段 · 再点一次停止';
       button.setAttribute('aria-label', '朗读本段英文');
       button.addEventListener('click', () => speakParagraph(pair.en, [en, button], UlyssesAudioKey.name(pageNo, paragraphNo, pair.en)));
-      en.append(button);
+      const note = document.createElement('button');
+      note.type = 'button';
+      note.className = 'para-note';
+      note.textContent = '✎';
+      note.title = '选句加入笔记本';
+      note.setAttribute('aria-label', '选择本段句子加入笔记本');
+      note.setAttribute('aria-pressed', 'false');
+      note.addEventListener('click', () => {
+        const on = !en.classList.contains('selecting');
+        en.classList.toggle('selecting', on);
+        note.setAttribute('aria-pressed', String(on));
+        note.textContent = on ? '完成' : '✎';
+        if (on) showToast('点句子即可加入或移出笔记本');
+      });
+      en.append(button, note);
     }
     const zh = document.createElement('p');
     zh.className = 'zh';
@@ -289,6 +324,7 @@ function renderPage(i) {
     content.append(row);
   });
   $('parallel').replaceChildren(content);
+  refreshSavedMarks();
   $('page').value = pageIndex;
   $('source-page').textContent = `PDF 第 ${page.pdfPage} 页`;
   $('prev').disabled = pageIndex === 0;
@@ -397,6 +433,11 @@ function renderDefinitions(source, heading, target) {
   return true;
 }
 function displayOnlineResult(result) {
+  const firstDefinition = source => source?.state === 'ok' ? source.entry.definitions?.[0] : null;
+  const translation = result.en?.state === 'ok' ? result.en.entry.chineseTranslations?.[0] : null;
+  currentGloss = currentGloss || (firstDefinition(result.zh)?.text || (translation ? translation.terms.join(' / ') : '') || firstDefinition(result.en)?.text || '').slice(0, 140);
+  const savedWord = notebook.get(notebook.wordId(currentQuery));
+  if (savedWord && !savedWord.gloss && currentGloss) notebook.update(savedWord.id, { gloss: currentGloss });
   const sources = [result.en, result.zh, result.lemma].filter(Boolean);
   const errors = sources.filter(source => source.state === 'error');
   const successes = sources.filter(source => source.state === 'ok');
@@ -475,6 +516,9 @@ async function showWord(raw, element = null, options = {}) {
   $('lookup-zh-definitions').replaceChildren();
   $('lookup-en-definitions').replaceChildren();
   const context = contextNotes[normaliseWord(term)];
+  currentSource = element ? sourceOf(element) : options.refresh ? currentSource : null;
+  currentGloss = typeof context === 'string' ? context : '';
+  updateSaveButton();
   $('lookup-context').hidden = typeof context !== 'string';
   $('lookup-context-text').textContent = typeof context === 'string' ? context : '';
   $('lookup-wiktionary').href = 'https://en.wiktionary.org/wiki/' + encodeURIComponent(term.replace(/ /g, '_')) + '#English';
@@ -506,7 +550,7 @@ $('parallel').addEventListener('pointerdown', event => {
   lastPointerType = event.pointerType;
   if (!event.isPrimary || event.button !== 0) return;
   const word = event.target.closest('.word');
-  if (!word) return;
+  if (!word || word.closest('p.selecting')) return;
   const started = { id: event.pointerId, x: event.clientX, y: event.clientY, word, timer: null };
   started.timer = setTimeout(() => {
     if (press !== started) return;
@@ -531,6 +575,8 @@ $('parallel').addEventListener('contextmenu', event => {
   if (event.target.closest('.word')) event.preventDefault();
 });
 $('parallel').addEventListener('click', event => {
+  const sentence = event.target.closest('.sent');
+  if (sentence && sentence.closest('p.selecting')) { toggleSentence(sentence); return; }
   const word = event.target.closest('.word');
   if (!word || Date.now() < ignoreClickUntil) return;
   speak(word.textContent, [word]);
@@ -584,6 +630,185 @@ for (const name of ['roots', 'meaning']) {
     chooseTab(event.key === 'Home' ? 'roots' : event.key === 'End' ? 'meaning' : name === 'roots' ? 'meaning' : 'roots', true);
   });
 }
+const notebook = UlyssesNotebook;
+const notebookDialog = $('notebook-dialog');
+let notebookTab = 'word', clearTimer = 0, currentSource = null, currentGloss = '';
+function viewIndexFor(sourcePage, paragraph) {
+  const index = readingPages.findIndex(view => view.sourcePage === sourcePage && paragraph >= view.startParagraph && paragraph < view.endParagraph);
+  return index < 0 ? 0 : index;
+}
+function sourceOf(element) {
+  const pair = element.closest('.pair');
+  if (!pair) return null;
+  const sentence = element.closest('.sent');
+  return { page: Number(pair.dataset.page), paragraph: Number(pair.dataset.paragraph), context: sentence ? sentence.textContent.trim() : '' };
+}
+function refreshSavedMarks() {
+  document.querySelectorAll('#parallel .word').forEach(el => el.classList.toggle('saved-word', notebook.has(notebook.wordId(el.dataset.word))));
+  document.querySelectorAll('#parallel .sent').forEach(el => el.classList.toggle('saved', notebook.has(notebook.sentenceId(el.textContent))));
+}
+function updateNotebookCount() {
+  const total = notebook.count();
+  $('notebook-count').textContent = total > 99 ? '99+' : String(total);
+  $('notebook-count').hidden = total === 0;
+}
+function updateSaveButton() {
+  const saved = !!currentQuery && notebook.has(notebook.wordId(currentQuery));
+  $('lookup-save').setAttribute('aria-pressed', String(saved));
+  $('lookup-save').textContent = saved ? '★ 已在笔记本' : '☆ 加入笔记本';
+}
+const STORAGE_FAILED = '浏览器无法保存笔记，请检查是否开启了无痕模式或存储已满。';
+function toggleSentence(element) {
+  const text = element.textContent.trim();
+  const source = sourceOf(element);
+  if (!text || !source) return;
+  const id = notebook.sentenceId(text);
+  if (notebook.has(id)) {
+    notebook.remove(id);
+    showToast('已从笔记本移出这个句子');
+  } else {
+    const page = pages[source.page];
+    const ok = notebook.add({ id, type: 'sentence', text, zh: page.paragraphs[source.paragraph].zh, page: source.page, paragraph: source.paragraph, pdfPage: page.pdfPage });
+    showToast(ok ? '已加入笔记本 · 句子' : STORAGE_FAILED);
+  }
+  refreshSavedMarks();
+  updateNotebookCount();
+}
+$('lookup-save').addEventListener('click', () => {
+  if (!currentQuery) return;
+  const id = notebook.wordId(currentQuery);
+  if (notebook.has(id)) {
+    notebook.remove(id);
+  } else {
+    const source = currentSource;
+    const ok = notebook.add({ id, type: 'word', text: currentQuery, gloss: currentGloss, context: source?.context || '', page: source?.page, paragraph: source?.paragraph, pdfPage: source ? pages[source.page].pdfPage : undefined });
+    if (!ok) $('lookup-status').textContent = STORAGE_FAILED;
+  }
+  updateSaveButton();
+  refreshSavedMarks();
+  updateNotebookCount();
+});
+function noteButton(label, onClick, className) {
+  const button = makeText('button', label, className);
+  button.type = 'button';
+  button.addEventListener('click', onClick);
+  return button;
+}
+function locateNote(item) {
+  notebookDialog.close();
+  renderPage(viewIndexFor(item.page, item.paragraph));
+  const pair = [...document.querySelectorAll('#parallel .pair')].find(row => Number(row.dataset.page) === item.page && Number(row.dataset.paragraph) === item.paragraph);
+  if (!pair) return;
+  pair.scrollIntoView({ block: 'center' });
+  pair.classList.add('flash');
+  setTimeout(() => pair.classList.remove('flash'), 1900);
+}
+function noteItem(item) {
+  const article = document.createElement('article');
+  article.className = 'note-item' + (item.type === 'sentence' ? ' is-sentence' : '');
+  const main = document.createElement('div');
+  main.className = 'note-main';
+  const text = makeText('b', item.text, 'note-text');
+  text.lang = 'en';
+  main.append(text);
+  if (item.gloss) main.append(makeText('span', item.gloss, 'note-gloss'));
+  article.append(main);
+  if (item.type === 'word' && item.context) {
+    const context = makeText('p', item.context, 'note-context');
+    context.lang = 'en';
+    article.append(context);
+  }
+  if (item.type === 'sentence' && item.zh) {
+    const details = document.createElement('details');
+    details.className = 'note-zh';
+    details.append(makeText('summary', '对应中文段落'), makeText('p', item.zh));
+    article.append(details);
+  }
+  const date = new Date(item.addedAt).toLocaleDateString('zh-CN');
+  article.append(makeText('p', (item.pdfPage ? `PDF 第 ${item.pdfPage} 页 · ` : '') + date, 'note-meta'));
+  const actions = document.createElement('div');
+  actions.className = 'note-actions';
+  const speakButton = noteButton('朗读', () => (item.type === 'word' ? speak(item.text, [speakButton]) : speakParagraph(item.text, [speakButton])));
+  actions.append(speakButton);
+  if (item.type === 'word') actions.append(noteButton('查词', () => { notebookDialog.close(); showWord(item.text); }));
+  if (Number.isInteger(item.page) && Number.isInteger(item.paragraph)) actions.append(noteButton('原文', () => locateNote(item)));
+  actions.append(noteButton('删除', () => {
+    notebook.remove(item.id);
+    renderNotebook();
+    refreshSavedMarks();
+    updateNotebookCount();
+    updateSaveButton();
+  }, 'note-delete'));
+  article.append(actions);
+  return article;
+}
+function renderNotebook() {
+  const items = notebook.list(notebookTab);
+  for (const tab of document.querySelectorAll('[data-notebook-tab]')) {
+    const on = tab.dataset.notebookTab === notebookTab;
+    tab.setAttribute('aria-selected', String(on));
+    tab.tabIndex = on ? 0 : -1;
+    tab.textContent = (tab.dataset.notebookTab === 'word' ? '单词 ' : '句子 ') + notebook.count(tab.dataset.notebookTab);
+  }
+  $('notebook-list').replaceChildren(...items.map(noteItem));
+  $('notebook-empty').hidden = items.length > 0;
+  $('notebook-empty').textContent = notebookTab === 'word' ? '还没有单词。查词时点“☆ 加入笔记本”。' : '还没有句子。点段落末尾的 ✎，再点想收藏的句子。';
+  const any = notebook.count() > 0;
+  for (const id of ['notebook-copy', 'notebook-csv', 'notebook-clear']) $(id).disabled = !any;
+  $('notebook-clear').textContent = '清空';
+  clearTimeout(clearTimer);
+}
+$('notebook-open').addEventListener('click', () => {
+  cancelPress();
+  stopSpeaking();
+  toggleThemeMenu(false);
+  $('notebook-status').textContent = '';
+  renderNotebook();
+  notebookDialog.showModal();
+});
+$('notebook-close').addEventListener('click', () => notebookDialog.close());
+notebookDialog.addEventListener('close', () => { stopSpeaking(); $('notebook-open').focus({ preventScroll: true }); });
+let notebookBackdropPress = false;
+notebookDialog.addEventListener('pointerdown', event => { notebookBackdropPress = event.target === notebookDialog; });
+notebookDialog.addEventListener('click', event => {
+  const rect = notebookDialog.getBoundingClientRect();
+  if (notebookBackdropPress && event.target === notebookDialog && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) notebookDialog.close();
+  notebookBackdropPress = false;
+});
+for (const tab of document.querySelectorAll('[data-notebook-tab]')) {
+  tab.addEventListener('click', () => { notebookTab = tab.dataset.notebookTab; renderNotebook(); });
+}
+$('notebook-copy').addEventListener('click', () => {
+  const done = ok => { $('notebook-status').textContent = ok ? '已复制到剪贴板。' : '复制失败，请改用导出 CSV。'; };
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(notebook.toText()).then(() => done(true), () => done(false));
+  else done(false);
+});
+$('notebook-csv').addEventListener('click', () => {
+  const url = URL.createObjectURL(new Blob([notebook.toCSV()], { type: 'text/csv;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'ulysses-notebook.csv';
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  $('notebook-status').textContent = '已导出 CSV。';
+});
+$('notebook-clear').addEventListener('click', () => {
+  if (!clearTimer) {
+    $('notebook-clear').textContent = '再点一次确认清空';
+    clearTimer = setTimeout(() => { clearTimer = 0; $('notebook-clear').textContent = '清空'; }, 4000);
+    return;
+  }
+  clearTimeout(clearTimer);
+  clearTimer = 0;
+  notebook.clear();
+  renderNotebook();
+  refreshSavedMarks();
+  updateNotebookCount();
+  updateSaveButton();
+  $('notebook-status').textContent = '笔记本已清空。';
+});
 $('chapter-open').addEventListener('click', () => {
   cancelPress();
   stopSpeaking();
@@ -632,4 +857,5 @@ document.addEventListener('keydown', event => {
 applyTheme(document.documentElement.dataset.theme);
 buildChapterDirectory();
 updateFont();
+updateNotebookCount();
 renderPage(0);
