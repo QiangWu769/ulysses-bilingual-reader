@@ -57,7 +57,8 @@ function playRecording(url, token) {
   });
 }
 // Human recording first (Free Dictionary API); the browser's built-in voice when there is none.
-function speak(text, marks = [], preferred = accent) {
+// Order: Gemini voice (when enabled) -> human recording -> browser voice. recordingOnly skips Gemini (accent buttons).
+function speak(text, marks = [], preferred = accent, recordingOnly = false) {
   const spoken = text.replace(/^-+|-+$/g, '').trim();
   if (!spoken) return;
   stopSpeaking();
@@ -66,6 +67,11 @@ function speak(text, marks = [], preferred = accent) {
   if (/^-|-$/.test(text.trim())) { speakSynthetic(spoken, token); return; }
   player.src = SILENT_WAV;
   player.play().catch(() => {});
+  const recorded = () => speakRecorded(spoken, token, preferred);
+  if (!recordingOnly && UlyssesAIVoice.isReady()) speakWithAI(spoken, token, marks, recorded);
+  else recorded();
+}
+function speakRecorded(spoken, token, preferred) {
   Promise.race([UlyssesPronunciation.lookup(spoken), new Promise(resolve => setTimeout(resolve, 2500, null))]).then(info => {
     if (token !== speakToken) return;
     const url = UlyssesPronunciation.choose(info, preferred);
@@ -90,7 +96,7 @@ function speakSentences(plain, token) {
     speechSynthesis.speak(utterance);
   });
 }
-async function speakWithAI(plain, token, marks) {
+async function speakWithAI(plain, token, marks, fallback = () => speakSentences(plain, token)) {
   const controller = new AbortController();
   aiAbort = controller;
   const timeout = setTimeout(() => controller.abort(), 45000);
@@ -102,8 +108,8 @@ async function speakWithAI(plain, token, marks) {
     try { await playRecording(url, token); } finally { URL.revokeObjectURL(url); }
   } catch (error) {
     if (token !== speakToken) return;
-    showToast(error && error.name === 'AbortError' ? 'AI 语音响应太慢，已改用系统语音。' : error && error.kind ? UlyssesAIVoice.describe(error) : 'AI 语音播放失败，已改用系统语音。');
-    speakSentences(plain, token);
+    showToast(error && error.name === 'AbortError' ? 'AI 语音响应太慢，已改用备用发音。' : error && error.kind ? UlyssesAIVoice.describe(error) : 'AI 语音播放失败，已改用备用发音。');
+    fallback();
   } finally {
     clearTimeout(timeout);
     marks.forEach(el => el.classList.remove('loading'));
@@ -146,7 +152,7 @@ for (const [id, name] of [['pron-us', 'us'], ['pron-uk', 'uk']]) {
   $(id).addEventListener('click', () => {
     accent = name;
     try { localStorage.setItem('ulysses-reader-accent', name); } catch (e) {}
-    speak(currentQuery, [$(id), $('lookup-speak')], name);
+    speak(currentQuery, [$(id), $('lookup-speak')], name, true);
   });
 }
 const THEMES = { paper: '#cfc6b6', sepia: '#a89272', mist: '#a9b8a6', white: '#edf1f5', night: '#0b0c0e' };
@@ -572,7 +578,7 @@ $('ai-test').addEventListener('click', async () => {
     stopSpeaking();
     try { $('ai-status').textContent = '正在播放试听。'; await playRecording(url, speakToken); $('ai-status').textContent = '试听完成，设置可用。'; } finally { URL.revokeObjectURL(url); }
   } catch (error) {
-    $('ai-status').textContent = error && error.kind ? UlyssesAIVoice.describe(error).replace('，已改用系统语音', '') : '试听播放失败，请检查浏览器是否允许播放声音。';
+    $('ai-status').textContent = error && error.kind ? UlyssesAIVoice.describe(error).replace('，已改用备用发音', '') : '试听播放失败，请检查浏览器是否允许播放声音。';
   }
 });
 aiDialog.addEventListener('close', () => { stopSpeaking(); });

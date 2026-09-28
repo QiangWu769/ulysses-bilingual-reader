@@ -139,12 +139,12 @@
   }
 
   const MESSAGES = {
-    key: 'AI 语音密钥无效或没有权限，已改用系统语音。',
-    quota: 'AI 语音额度用完或请求太频繁，已改用系统语音。',
-    network: '连不上 Google 语音服务，已改用系统语音。',
-    empty: 'AI 语音没有返回声音，已改用系统语音。',
-    config: 'AI 语音设置不完整，已改用系统语音。',
-    server: 'AI 语音服务出错，已改用系统语音。'
+    key: 'AI 语音密钥无效或没有权限，已改用备用发音。',
+    quota: 'AI 语音额度用完或请求太频繁，已改用备用发音。',
+    network: '连不上 Google 语音服务，已改用备用发音。',
+    empty: 'AI 语音没有返回声音，已改用备用发音。',
+    config: 'AI 语音设置不完整，已改用备用发音。',
+    server: 'AI 语音服务出错，已改用备用发音。'
   };
   function describe(error) { return MESSAGES[error && error.kind] || MESSAGES.server; }
 
