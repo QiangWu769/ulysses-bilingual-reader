@@ -64,6 +64,27 @@ function speak(text, marks = [], preferred = accent) {
     return playRecording(url, token).catch(() => speakSynthetic(spoken, token));
   });
 }
+// Reads a whole paragraph sentence by sentence (long single utterances get cut off in some browsers). Click again to stop.
+function speakParagraph(text, marks) {
+  if (!canSpeak) return;
+  const wasReading = marks.some(el => speakingEls.includes(el));
+  stopSpeaking();
+  if (wasReading) return;
+  const token = speakToken;
+  markSpeaking(marks);
+  const plain = text.replace(/\s+/g, ' ').trim();
+  const sentences = plain.match(/[^.!?…]+(?:[.!?…]+["'”’)\]]*|$)\s*/g) || [plain];
+  sentences.forEach((sentence, index) => {
+    const utterance = new SpeechSynthesisUtterance(sentence.trim());
+    utterance.lang = 'en-US';
+    utterance.rate = 0.9;
+    if (voice) utterance.voice = voice;
+    const finish = () => { if (token === speakToken && index === sentences.length - 1) markSpeaking([]); };
+    utterance.onend = finish;
+    utterance.onerror = event => { if (event.error !== 'canceled' && event.error !== 'interrupted') finish(); };
+    speechSynthesis.speak(utterance);
+  });
+}
 function renderPronunciation(info, query) {
   const audio = info?.audio || {};
   const us = audio.us || audio.other, uk = audio.uk;
@@ -136,6 +157,7 @@ function appendEnglish(element, text) {
 }
 function renderPage(i) {
   cancelPress();
+  stopSpeaking();
   if (dialog.open) dialog.close();
   pageIndex = Math.min(pages.length - 1, Math.max(0, i));
   const page = pages[pageIndex];
@@ -146,6 +168,16 @@ function renderPage(i) {
     const en = document.createElement('p');
     en.lang = 'en';
     appendEnglish(en, pair.en);
+    if (canSpeak) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'para-speak';
+      button.textContent = '🐶♪';
+      button.title = '朗读本段 · 再点一次停止';
+      button.setAttribute('aria-label', '朗读本段英文');
+      button.addEventListener('click', () => speakParagraph(pair.en, [en, button]));
+      en.append(button);
+    }
     const zh = document.createElement('p');
     zh.className = 'zh';
     zh.lang = 'zh-CN';
