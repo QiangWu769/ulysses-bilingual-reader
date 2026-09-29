@@ -1,25 +1,121 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const pages = JSON.parse($('reader-data').textContent);
-const chapters = JSON.parse($('chapter-data').textContent);
-// Chapter breaks may fall inside a PDF page. Keep source indices intact for paragraph audio.
-const readingPages = [];
-chapters.forEach((chapter, chapterIndex) => {
-  const next = chapters[chapterIndex + 1];
-  chapter.firstView = readingPages.length;
-  for (let sourcePage = chapter.startPage; sourcePage < pages.length; sourcePage++) {
-    if (next && sourcePage > next.startPage) break;
-    const startParagraph = sourcePage === chapter.startPage ? chapter.startParagraph : 0;
-    const endParagraph = next && sourcePage === next.startPage ? next.startParagraph : pages[sourcePage].paragraphs.length;
-    if (endParagraph > startParagraph) readingPages.push({ chapterIndex, sourcePage, startParagraph, endParagraph });
-    if (next && sourcePage === next.startPage) break;
-  }
-  chapter.lastView = readingPages.length - 1;
-});
-let selectedChapter = -1;
+const BOOKS = {
+  ulysses: { id: 'ulysses', title: '尤利西斯', shortTitle: 'Ulysses', en: 'Ulysses', chapterWord: '章', pageWord: '本章', sourceType: 'PDF', translation: 'AI 译文',
+    summary: '已收录前 10 章及第 11 章的部分内容，共 267 页原文。点击章名，从章首开始阅读。',
+    scope: '第 11 章尚未收录完整，第 12–18 章不在当前 PDF 中。章名采用通行的荷马式标题；PDF 页内的章节交界已按段落分开。' },
+  'sound-and-fury': { id: 'sound-and-fury', title: '喧哗与骚动', shortTitle: '喧哗与骚动', en: 'The Sound and the Fury', chapterWord: '部分', pageWord: '本部分', sourceType: '电子书', translation: '机器译文', url: 'books/sound-and-fury.json',
+    summary: '完整英文原作，共四个部分。中文为 Google 机器译文，已统一主要人名并抽查，尚未逐句文学审校。',
+    scope: '英文斜体按原电子书保留，用于辨认叙事转换。阅读页按完整段落重排，不对应纸书页码。中文仅供对照理解。', sourceUrl: 'https://www.gutenberg.org/ebooks/75170' }
+};
+const bookCache = new Map([['ulysses', { pages: JSON.parse($('reader-data').textContent), chapters: JSON.parse($('chapter-data').textContent), contextNotes: JSON.parse($('context-data').textContent) }]]);
+let currentBook = BOOKS.ulysses;
+let { pages, chapters, contextNotes } = bookCache.get('ulysses');
+let readingPages = [], selectedChapter = -1;
 const chapterDialog = $('chapter-dialog');
-let chapterJumped = false;
-const contextNotes = JSON.parse($('context-data').textContent);
+const bookDialog = $('book-dialog');
+let chapterJumped = false, bookLoadController = null;
+// Only reading metadata lives here. Each book keeps its own page and scroll position.
+let readingPositions = {};
+try { readingPositions = JSON.parse(localStorage.getItem('bilingual-reading-positions-v1') || '{}'); } catch (e) {}
+if (!readingPositions || typeof readingPositions !== 'object' || Array.isArray(readingPositions)) readingPositions = {};
+function makeReadingPages() {
+  readingPages = [];
+  chapters.forEach((chapter, chapterIndex) => {
+    const next = chapters[chapterIndex + 1];
+    chapter.firstView = readingPages.length;
+    for (let sourcePage = chapter.startPage; sourcePage < pages.length; sourcePage++) {
+      if (next && sourcePage > next.startPage) break;
+      const startParagraph = sourcePage === chapter.startPage ? chapter.startParagraph : 0;
+      const endParagraph = next && sourcePage === next.startPage ? next.startParagraph : pages[sourcePage].paragraphs.length;
+      if (endParagraph > startParagraph) readingPages.push({ chapterIndex, sourcePage, startParagraph, endParagraph });
+      if (next && sourcePage === next.startPage) break;
+    }
+    chapter.lastView = readingPages.length - 1;
+  });
+}
+function saveReadingPosition() {
+  readingPositions[currentBook.id] = { page: pageIndex, scroll: $('reading').scrollTop };
+  try { localStorage.setItem('bilingual-reading-positions-v1', JSON.stringify(readingPositions)); } catch (e) {}
+}
+function pageSourceLabel(page, index) {
+  return Number.isInteger(page.pdfPage) ? `PDF 第 ${page.pdfPage} 页` : `阅读第 ${index + 1} 页`;
+}
+function chapterLabel(chapter) { return `第 ${chapter.id} ${currentBook.chapterWord}`; }
+function updateBookPicker() {
+  for (const button of document.querySelectorAll('[data-book-id]')) {
+    const selected = button.dataset.bookId === currentBook.id;
+    button.setAttribute('aria-current', String(selected));
+    const position = readingPositions[button.dataset.bookId];
+    button.querySelector('.book-state').textContent = selected ? '正在阅读' : position ? '继续上次阅读' : '开始阅读';
+  }
+}
+function activateBook(id, data, targetPosition) {
+  currentBook = BOOKS[id];
+  pages = data.pages; chapters = data.chapters; contextNotes = data.contextNotes || {};
+  selectedChapter = -1;
+  makeReadingPages();
+  notebook.selectBook(id, currentBook.title);
+  $('book-name').textContent = currentBook.shortTitle;
+  $('book-open').title = `当前：${currentBook.title} · 点击选书`;
+  $('translation-label').textContent = currentBook.translation;
+  document.querySelector('label[for="page"]').textContent = `选择${currentBook.pageWord}页`;
+  $('chapter-book-title').textContent = currentBook.en + ' · CONTENTS';
+  $('chapter-summary').textContent = currentBook.summary;
+  $('chapter-list').setAttribute('aria-label', currentBook.title + '章节');
+  $('notebook-title').textContent = currentBook.title + ' · 笔记';
+  $('chapter-list').replaceChildren();
+  buildChapterDirectory();
+  updateNotebookCount();
+  currentSource = null; currentQuery = ''; currentGloss = ''; lookupHistory = [];
+  const position = targetPosition || readingPositions[id] || { page: 0, scroll: 0 };
+  renderPage(Number.isInteger(position.page) ? position.page : 0);
+  const shown = currentBook.id, shownPage = pageIndex;
+  requestAnimationFrame(() => { if (currentBook.id === shown && pageIndex === shownPage) { $('reading').scrollTop = Math.max(0, Number(position.scroll) || 0); saveReadingPosition(); } });
+  try { localStorage.setItem('bilingual-current-book-v1', id); } catch (e) {}
+  updateBookPicker();
+}
+async function chooseBook(id) {
+  if (!BOOKS[id] || bookLoadController) return;
+  if (id === currentBook.id) { bookDialog.close(); return; }
+  saveReadingPosition();
+  cancelPress(); stopSpeaking();
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 20000);
+  bookLoadController = controller;
+  $('book-status').textContent = `正在打开《${BOOKS[id].title}》…`;
+  for (const button of document.querySelectorAll('[data-book-id]')) button.disabled = true;
+  try {
+    let data = bookCache.get(id);
+    if (!data) {
+      const response = await fetch(BOOKS[id].url, { signal: controller.signal });
+      if (!response.ok) throw new Error('book-download');
+      data = await response.json();
+      if (!Array.isArray(data.pages) || !data.pages.length || !Array.isArray(data.chapters) || !data.chapters.length) throw new Error('book-data');
+      bookCache.set(id, data);
+    }
+    if (controller.signal.aborted) return;
+    querySequence++;
+    if (queryController) queryController.abort();
+    if (dialog.open) dialog.close();
+    if (chapterDialog.open) chapterDialog.close();
+    if (notebookDialog.open) notebookDialog.close();
+    activateBook(id, data);
+    $('book-status').textContent = '';
+    bookLoadController = null;
+    if (bookDialog.open) bookDialog.close();
+  } catch (error) {
+    if (timedOut || error.name !== 'AbortError') {
+      $('book-status').textContent = '这本书暂时无法加载，请检查网络后再点一次。当前阅读内容已保留。';
+      if (!bookDialog.open) bookDialog.showModal();
+    }
+  } finally {
+    clearTimeout(timeout);
+    if (bookLoadController === controller) bookLoadController = null;
+    for (const button of document.querySelectorAll('[data-book-id]')) button.disabled = false;
+  }
+}
 const normaliseWord = value => value.trim().toLowerCase().replace(/[’‘]/g, "'");
 let queryController = null, querySequence = 0, currentQuery = '', lookupHistory = [];
 let pageIndex = 0, fontSize = 18, activeWord = null, press = null, returnFocus = null;
@@ -181,13 +277,13 @@ function updateChapterNavigation(chapterIndex) {
   for (let i = chapter.firstView; i <= chapter.lastView; i++) {
     const option = document.createElement('option');
     option.value = i;
-    option.textContent = `本章 ${i - chapter.firstView + 1} / ${chapter.lastView - chapter.firstView + 1}`;
+    option.textContent = `${currentBook.pageWord} ${i - chapter.firstView + 1} / ${chapter.lastView - chapter.firstView + 1}`;
     options.append(option);
   }
   $('page').replaceChildren(options);
-  $('current-chapter').textContent = `第 ${chapter.id} 章 · ${chapter.zh}`;
+  $('current-chapter').textContent = `${chapterLabel(chapter)} · ${chapter.zh}`;
   $('current-chapter').title = `${chapter.zh} · ${chapter.en}`;
-  document.title = `${chapter.zh} · 尤利西斯中英对照`;
+  document.title = `${chapter.zh} · ${currentBook.title}中英对照`;
   for (const button of $('chapter-list').querySelectorAll('[data-chapter-index]')) {
     const active = Number(button.dataset.chapterIndex) === chapterIndex;
     if (active) button.setAttribute('aria-current', 'location');
@@ -200,7 +296,7 @@ function buildChapterDirectory() {
   for (const [chapterIndex, chapter] of chapters.entries()) {
     if (chapter.part !== part) {
       part = chapter.part;
-      $('chapter-list').append(makeText('h3', part === 1 ? '第一部' : '第二部'));
+      $('chapter-list').append(makeText('h3', currentBook.id === 'ulysses' ? part === 1 ? '第一部' : '第二部' : '全书 · 四个部分'));
       list = document.createElement('ol');
       $('chapter-list').append(list);
     }
@@ -217,9 +313,10 @@ function buildChapterDirectory() {
     name.append(english);
     const meta = document.createElement('span');
     meta.className = 'chapter-meta';
-    const firstPDF = pages[readingPages[chapter.firstView].sourcePage].pdfPage;
-    const lastPDF = pages[readingPages[chapter.lastView].sourcePage].pdfPage;
-    meta.append(makeText('span', `PDF ${firstPDF}–${lastPDF}`));
+    const firstSource = readingPages[chapter.firstView].sourcePage;
+    const lastSource = readingPages[chapter.lastView].sourcePage;
+    const range = currentBook.sourceType === 'PDF' ? `PDF ${pages[firstSource].pdfPage}–${pages[lastSource].pdfPage}` : `阅读页 ${firstSource + 1}–${lastSource + 1}`;
+    meta.append(makeText('span', range));
     if (chapter.incomplete) meta.append(makeText('span', '部分收录 · 未完'));
     meta.append(makeText('span', '', 'chapter-state'));
     button.append(name, meta);
@@ -231,7 +328,12 @@ function buildChapterDirectory() {
     item.append(button);
     list.append(item);
   }
-  $('chapter-list').append(makeText('p', '第 11 章尚未收录完整，第 12–18 章不在当前 PDF 中。章名采用通行的荷马式标题；PDF 页内的章节交界已按段落分开。', 'chapter-scope'));
+  const scope = makeText('p', currentBook.scope, 'chapter-scope');
+  if (currentBook.sourceUrl) {
+    scope.append(document.createElement('br'), makeSource(currentBook.sourceUrl, '英文来源：Project Gutenberg'));
+    scope.append(document.createTextNode(' · '), makeSource('books/the-sound-and-the-fury-en.txt', '英文全文及使用说明'));
+  }
+  $('chapter-list').append(scope);
 }
 function updateFont() {
   document.documentElement.style.setProperty('--text-size', fontSize + 'px');
@@ -251,12 +353,24 @@ function splitSentences(text) {
   }
   return merged;
 }
-function appendEnglish(element, text) {
+function appendEnglish(element, text, emphasis = []) {
+  let offset = 0;
   for (const part of splitSentences(text)) {
     const sentence = document.createElement('span');
     sentence.className = 'sent';
-    appendWords(sentence, part);
+    const ranges = emphasis.filter(([a, b]) => a < offset + part.length && b > offset);
+    let cursor = 0;
+    for (const [a, b] of ranges) {
+      const start = Math.max(0, a - offset), end = Math.min(part.length, b - offset);
+      if (start > cursor) appendWords(sentence, part.slice(cursor, start));
+      const italic = document.createElement('em');
+      appendWords(italic, part.slice(start, end));
+      sentence.append(italic);
+      cursor = end;
+    }
+    if (cursor < part.length) appendWords(sentence, part.slice(cursor));
     element.append(sentence);
+    offset += part.length;
   }
 }
 function appendWords(element, text) {
@@ -292,7 +406,7 @@ function renderPage(i) {
     row.dataset.paragraph = paragraphNo;
     const en = document.createElement('p');
     en.lang = 'en';
-    appendEnglish(en, pair.en);
+    appendEnglish(en, pair.en, pair.emphasis);
     {
       const button = document.createElement('button');
       button.type = 'button';
@@ -300,7 +414,7 @@ function renderPage(i) {
       button.innerHTML = DOG_ICON + '<span aria-hidden="true">♪</span>';
       button.title = '朗读本段 · 再点一次停止';
       button.setAttribute('aria-label', '朗读本段英文');
-      button.addEventListener('click', () => speakParagraph(pair.en, [en, button], UlyssesAudioKey.name(pageNo, paragraphNo, pair.en)));
+      button.addEventListener('click', () => speakParagraph(pair.en, [en, button], (currentBook.id === 'ulysses' ? UlyssesAudioKey.name(pageNo, paragraphNo, pair.en) : null)));
       const note = document.createElement('button');
       note.type = 'button';
       note.className = 'para-note';
@@ -327,28 +441,29 @@ function renderPage(i) {
   $('parallel').replaceChildren(content);
   refreshSavedMarks();
   $('page').value = pageIndex;
-  $('source-page').textContent = `PDF 第 ${page.pdfPage} 页`;
+  $('source-page').textContent = pageSourceLabel(page, view.sourcePage);
   $('prev').disabled = pageIndex === 0;
   $('next').disabled = pageIndex === readingPages.length - 1;
   const first = pageIndex === chapter.firstView;
   const last = pageIndex === chapter.lastView;
   const intro = document.querySelector('.intro');
   intro.hidden = !first;
-  $('chapter-part').textContent = `${chapter.part === 1 ? '第一部' : '第二部'} · 第 ${chapter.id} 章`;
+  $('chapter-part').textContent = currentBook.id === 'ulysses' ? `${chapter.part === 1 ? '第一部' : '第二部'} · ${chapterLabel(chapter)}` : `${currentBook.title} · ${chapterLabel(chapter)}`;
   $('chapter-title').textContent = chapter.zh;
   $('chapter-subtitle').textContent = chapter.en + (chapter.incomplete ? ' · 部分收录' : '');
-  $('prev').textContent = first && pageIndex > 0 ? '‹ 上一章' : '‹ 上一页';
-  $('prev').setAttribute('aria-label', first && pageIndex > 0 ? '上一章末页' : '上一页');
-  $('next').textContent = last && pageIndex < readingPages.length - 1 ? '下一章 ›' : '下一页 ›';
-  $('next').setAttribute('aria-label', last && pageIndex < readingPages.length - 1 ? '下一章' : '下一页');
+  $('prev').textContent = first && pageIndex > 0 ? (currentBook.id === 'ulysses' ? '‹ 上一章' : '‹ 上一部分') : '‹ 上一页';
+  $('prev').setAttribute('aria-label', first && pageIndex > 0 ? (currentBook.id === 'ulysses' ? '上一章末页' : '上一部分末页') : '上一页');
+  $('next').textContent = last && pageIndex < readingPages.length - 1 ? (currentBook.id === 'ulysses' ? '下一章 ›' : '下一部分 ›') : '下一页 ›';
+  $('next').setAttribute('aria-label', last && pageIndex < readingPages.length - 1 ? (currentBook.id === 'ulysses' ? '下一章' : '下一部分') : '下一页');
   $('continuation').textContent = last
     ? chapter.incomplete ? '当前 PDF 收录至此 · 第 11 章尚未结束'
-      : `第 ${chapter.id} 章完 · 下一章：${chapters[view.chapterIndex + 1].zh}`
+      : chapters[view.chapterIndex + 1] ? `${chapterLabel(chapter)}完 · 下一${currentBook.chapterWord}：${chapters[view.chapterIndex + 1].zh}` : `《${currentBook.title}》全书完`
     : page.endsMidParagraph ? '本页末句接续至下一页' : '';
   $('parallel').classList.toggle('opening', pageIndex === 0);
   $('progress').style.width = ((pageIndex - chapter.firstView + 1) / (chapter.lastView - chapter.firstView + 1) * 100) + '%';
   $('reading').scrollTop = 0;
-  $('announcement').textContent = `第 ${chapter.id} 章，${chapter.zh}，本章第 ${pageIndex - chapter.firstView + 1} 页，PDF 第 ${page.pdfPage} 页`;
+  $('announcement').textContent = `${currentBook.title}，${chapterLabel(chapter)}，${chapter.zh}，${currentBook.pageWord}第 ${pageIndex - chapter.firstView + 1} 页，${pageSourceLabel(page, view.sourcePage)}`;
+  saveReadingPosition();
 }
 function openDialog(origin) {
   if (dialog.open) return;
@@ -726,7 +841,7 @@ function noteItem(item) {
     article.append(details);
   }
   const date = new Date(item.addedAt).toLocaleDateString('zh-CN');
-  article.append(makeText('p', (item.pdfPage ? `PDF 第 ${item.pdfPage} 页 · ` : '') + date, 'note-meta'));
+  article.append(makeText('p', (item.pdfPage ? `PDF 第 ${item.pdfPage} 页 · ` : Number.isInteger(item.page) ? `阅读第 ${item.page + 1} 页 · ` : '') + date, 'note-meta'));
   const actions = document.createElement('div');
   actions.className = 'note-actions';
   const speakButton = noteButton('朗读', () => (item.type === 'word' ? speak(item.text, [speakButton]) : speakParagraph(item.text, [speakButton])));
@@ -788,7 +903,7 @@ $('notebook-csv').addEventListener('click', () => {
   const url = URL.createObjectURL(new Blob([notebook.toCSV()], { type: 'text/csv;charset=utf-8' }));
   const link = document.createElement('a');
   link.href = url;
-  link.download = 'ulysses-notebook.csv';
+  link.download = currentBook.id + '-notebook.csv';
   document.body.append(link);
   link.click();
   link.remove();
@@ -855,8 +970,24 @@ document.addEventListener('pointerdown', event => {
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && !themeMenu.hidden) { toggleThemeMenu(false); $('theme-open').focus({ preventScroll: true }); }
 });
+$('book-open').addEventListener('click', () => {
+  cancelPress(); stopSpeaking(); toggleThemeMenu(false); saveReadingPosition(); updateBookPicker();
+  $('book-status').textContent = '';
+  bookDialog.showModal();
+  bookDialog.querySelector('[aria-current=true]')?.focus({ preventScroll: true });
+});
+$('book-close').addEventListener('click', () => bookDialog.close());
+bookDialog.addEventListener('close', () => {
+  if (bookLoadController) bookLoadController.abort();
+  $('book-open').focus({ preventScroll: true });
+});
+for (const button of document.querySelectorAll('[data-book-id]')) button.addEventListener('click', () => chooseBook(button.dataset.bookId));
+let positionTimer = 0;
+$('reading').addEventListener('scroll', () => { clearTimeout(positionTimer); positionTimer = setTimeout(saveReadingPosition, 180); }, { passive: true });
+window.addEventListener('pagehide', saveReadingPosition);
 applyTheme(document.documentElement.dataset.theme);
-buildChapterDirectory();
 updateFont();
-updateNotebookCount();
-renderPage(0);
+let initialBook = 'ulysses';
+try { const saved = localStorage.getItem('bilingual-current-book-v1'); if (BOOKS[saved]) initialBook = saved; } catch (e) {}
+activateBook('ulysses', bookCache.get('ulysses'));
+if (initialBook !== 'ulysses') chooseBook(initialBook);

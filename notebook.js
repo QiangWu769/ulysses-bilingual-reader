@@ -2,7 +2,8 @@
 (function (root) {
   'use strict';
 
-  const KEY = 'ulysses-notebook-v1';
+  let KEY = 'ulysses-notebook-v1';
+  let bookTitle = '尤利西斯';
   const key = root.UlyssesAudioKey;
   let items = null;
 
@@ -53,10 +54,10 @@
 
   function csvCell(value) { return '"' + String(value == null ? '' : value).replace(/"/g, '""') + '"'; }
   function toCSV() {
-    const rows = [['类型', '内容', '释义', '原句', '对应中文段落', '页码', '添加时间']];
+    const rows = [['书名', '类型', '内容', '释义', '原句', '对应中文段落', '页码', '添加时间']];
     for (const item of list().reverse()) {
-      rows.push([item.type === 'word' ? '单词' : '句子', item.text, item.gloss || '', item.context || '', item.zh || '',
-        item.pdfPage ? 'PDF 第 ' + item.pdfPage + ' 页' : '', new Date(item.addedAt).toISOString().slice(0, 10)]);
+      rows.push([bookTitle, item.type === 'word' ? '单词' : '句子', item.text, item.gloss || '', item.context || '', item.zh || '',
+        item.pdfPage ? 'PDF 第 ' + item.pdfPage + ' 页' : Number.isInteger(item.page) ? '阅读第 ' + (item.page + 1) + ' 页' : '', new Date(item.addedAt).toISOString().slice(0, 10)]);
     }
     return '﻿' + rows.map(row => row.map(csvCell).join(',')).join('\r\n');
   }
@@ -68,5 +69,7 @@
     return out.join('\n').trim();
   }
 
-  root.UlyssesNotebook = { wordId, sentenceId, has, get, list, count, add, remove, update, clear, toCSV, toText };
+  function selectBook(id, title) { KEY = id === 'ulysses' ? 'ulysses-notebook-v1' : 'reader-notebook-v1:' + id; bookTitle = title; items = null; }
+
+  root.UlyssesNotebook = { selectBook, wordId, sentenceId, has, get, list, count, add, remove, update, clear, toCSV, toText };
 })(typeof window !== 'undefined' ? window : globalThis);
