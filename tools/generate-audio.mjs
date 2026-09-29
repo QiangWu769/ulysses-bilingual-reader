@@ -57,17 +57,39 @@ console.log(`Pages ${first}-${last}: ${jobs.length} paragraphs, ${chars.toLocale
 if (dryRun) { console.log('Dry run: nothing sent. Compare the character count with your monthly free quota.'); process.exit(0); }
 if (!apiKey) { console.error('Set GOOGLE_TTS_API_KEY first.'); process.exit(1); }
 
+// The API rejects a "sentence" longer than roughly 1,000 characters (Faulkner has run-ons of several thousand),
+// so an over-long sentence is cut at commas / spaces into pieces that are sent as separate requests.
+const MAX_SENTENCE = 600;
+function cutLong(sentence) {
+  const pieces = [];
+  let rest = sentence.trim();
+  while (rest.length > MAX_SENTENCE) {
+    const window = rest.slice(0, MAX_SENTENCE);
+    let cut = Math.max(window.lastIndexOf(', '), window.lastIndexOf('; '), window.lastIndexOf(': '), window.lastIndexOf(' — '));
+    if (cut < MAX_SENTENCE / 2) cut = window.lastIndexOf(' ');
+    if (cut <= 0) cut = MAX_SENTENCE;
+    pieces.push(rest.slice(0, cut + 1).trim());
+    rest = rest.slice(cut + 1).trim();
+  }
+  if (rest) pieces.push(rest);
+  return pieces;
+}
 function chunks(text) {
-  if (text.length <= MAX_CHUNK) return [text];
+  if (text.length <= MAX_CHUNK && text.length <= MAX_SENTENCE) return [text];
   const sentences = text.match(/[^.!?…]+(?:[.!?…]+["'”’)\]]*|$)\s*/g) || [text];
   const out = [];
   let current = '';
+  const flush = () => { if (current.trim()) out.push(current.trim()); current = ''; };
   for (const sentence of sentences) {
-    if (current && (current + sentence).length > MAX_CHUNK) { out.push(current.trim()); current = ''; }
+    if (sentence.trim().length > MAX_SENTENCE) {
+      flush();
+      out.push(...cutLong(sentence));
+      continue;
+    }
+    if (current && (current + sentence).length > MAX_CHUNK) flush();
     current += sentence;
-    while (current.length > MAX_CHUNK) { out.push(current.slice(0, MAX_CHUNK)); current = current.slice(MAX_CHUNK); }
   }
-  if (current.trim()) out.push(current.trim());
+  flush();
   return out;
 }
 
