@@ -20,7 +20,7 @@
 
 ## 预生成的段落朗读（访客无需密钥）
 
-《尤利西斯》小狗按钮的朗读顺序：`audio/` 里预生成的 MP3 → 浏览器自带语音。《喧哗与骚动》使用浏览器自带英语语音，不会误用另一本书的 MP3。预生成音频由 `tools/generate-audio.mjs` 调用 Google Cloud Text-to-Speech 一次性生成，随网站发布，访客不需要密钥，也不产生后续调用费用。
+小狗按钮的朗读顺序：当前这本书预生成的 MP3 → 浏览器自带语音。《尤利西斯》的音频在 `audio/`（目前覆盖前 100 页），《喧哗与骚动》的音频在 `audio/sound-and-fury/`（全书），两本书各有自己的 `manifest.json`，互不混用。预生成音频由 `tools/generate-audio.mjs` 调用 Google Cloud Text-to-Speech 一次性生成，随网站发布，访客不需要密钥，也不产生后续调用费用。
 
 在自己电脑上运行（需要 Node 18+；密钥只从环境变量读取，不会写入任何文件，也不要提交到仓库）：
 
@@ -29,6 +29,7 @@ export GOOGLE_TTS_API_KEY=你的密钥        # Windows PowerShell: $env:GOOGLE_
 node tools/generate-audio.mjs --dry-run   # 只统计字符数，不发请求（前 100 页约 21 万字符）
 node tools/generate-audio.mjs --pages 1-3 # 先生成前几页试听
 node tools/generate-audio.mjs             # 生成全部；已生成的会跳过，可中断后继续
+node tools/generate-audio.mjs --book sound-and-fury   # 《喧哗与骚动》（约 50 万字符）；默认书是 ulysses
 ```
 
 可选参数：`--voice en-GB-Chirp3-HD-Charon`（默认 `en-US-Chirp3-HD-Aoede`，美式女声）、`--rate 0.95`、`--concurrency 3`。生成后把 `audio/` 目录提交并推送。段落文字被修改后，对应文件名（含文本哈希）不再匹配，会自动退回其他朗读方式，重新运行脚本即可补生成。费用和免费额度以 Google 官方定价为准；密钥需要在 Google Cloud 启用 Text-to-Speech API，并建议限制为只能调用该 API。

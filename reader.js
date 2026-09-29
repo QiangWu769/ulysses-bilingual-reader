@@ -1,10 +1,10 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const BOOKS = {
-  ulysses: { id: 'ulysses', title: '尤利西斯', shortTitle: 'Ulysses', en: 'Ulysses', chapterWord: '章', pageWord: '本章', sourceType: 'PDF', translation: 'AI 译文',
+  ulysses: { id: 'ulysses', title: '尤利西斯', shortTitle: 'Ulysses', en: 'Ulysses', chapterWord: '章', pageWord: '本章', sourceType: 'PDF', translation: 'AI 译文', audioDir: 'audio',
     summary: '已收录前 10 章及第 11 章的部分内容，共 267 页原文。点击章名，从章首开始阅读。',
     scope: '第 11 章尚未收录完整，第 12–18 章不在当前 PDF 中。章名采用通行的荷马式标题；PDF 页内的章节交界已按段落分开。' },
-  'sound-and-fury': { id: 'sound-and-fury', title: '喧哗与骚动', shortTitle: '喧哗与骚动', en: 'The Sound and the Fury', chapterWord: '部分', pageWord: '本部分', sourceType: '电子书', translation: '机器译文', url: 'books/sound-and-fury.json',
+  'sound-and-fury': { id: 'sound-and-fury', title: '喧哗与骚动', shortTitle: '喧哗与骚动', en: 'The Sound and the Fury', chapterWord: '部分', pageWord: '本部分', sourceType: '电子书', translation: '机器译文', url: 'books/sound-and-fury.json', audioDir: 'audio/sound-and-fury',
     summary: '完整英文原作，共四个部分。中文为 Google 机器译文，已统一主要人名并抽查，尚未逐句文学审校。',
     scope: '英文斜体按原电子书保留，用于辨认叙事转换。阅读页按完整段落重排，不对应纸书页码。中文仅供对照理解。', sourceUrl: 'https://www.gutenberg.org/ebooks/75170' }
 };
@@ -52,6 +52,7 @@ function updateBookPicker() {
 }
 function activateBook(id, data, targetPosition) {
   currentBook = BOOKS[id];
+  loadAudioManifest(currentBook);
   pages = data.pages; chapters = data.chapters; contextNotes = data.contextNotes || {};
   selectedChapter = -1;
   makeReadingPages();
@@ -126,11 +127,16 @@ const canSpeak = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in wi
 const SILENT_WAV = 'data:audio/wav;base64,UklGRvQHAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YdAHAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==';
 const player = new Audio();
 let voice = null, speakingEls = [], speakToken = 0, accent = 'us', toastTimer = 0;
-// Pre-generated paragraph recordings (see tools/generate-audio.mjs); the manifest lists which files exist.
-const audioNames = new Set();
-fetch('audio/manifest.json').then(response => response.ok ? response.json() : null).then(manifest => {
-  if (manifest && Array.isArray(manifest.files)) manifest.files.forEach(item => audioNames.add(item));
-}).catch(() => {});
+// Pre-generated paragraph recordings per book (see tools/generate-audio.mjs); each book's manifest lists which files exist.
+const audioNames = {};
+function loadAudioManifest(book) {
+  if (audioNames[book.id]) return;
+  const names = audioNames[book.id] = new Set();
+  fetch(book.audioDir + '/manifest.json').then(response => response.ok ? response.json() : null).then(manifest => {
+    if (manifest && Array.isArray(manifest.files)) manifest.files.forEach(item => names.add(item));
+  }).catch(() => { delete audioNames[book.id]; });
+}
+loadAudioManifest(currentBook);
 try { if (localStorage.getItem('ulysses-reader-accent') === 'uk') accent = 'uk'; } catch (e) {}
 function pickVoice() {
   const english = speechSynthesis.getVoices().filter(item => /^en/i.test(item.lang));
@@ -220,8 +226,8 @@ function speakParagraph(text, marks, name) {
   const token = speakToken;
   markSpeaking(marks);
   const plain = text.replace(/\s+/g, ' ').trim();
-  if (name && audioNames.has(name)) {
-    playRecording('audio/' + name + '.mp3', token).catch(() => { if (token === speakToken) speakSentences(plain, token); });
+  if (name && audioNames[currentBook.id]?.has(name)) {
+    playRecording(currentBook.audioDir + '/' + name + '.mp3', token).catch(() => { if (token === speakToken) speakSentences(plain, token); });
     return;
   }
   speakSentences(plain, token);
@@ -414,7 +420,7 @@ function renderPage(i) {
       button.innerHTML = DOG_ICON + '<span aria-hidden="true">♪</span>';
       button.title = '朗读本段 · 再点一次停止';
       button.setAttribute('aria-label', '朗读本段英文');
-      button.addEventListener('click', () => speakParagraph(pair.en, [en, button], (currentBook.id === 'ulysses' ? UlyssesAudioKey.name(pageNo, paragraphNo, pair.en) : null)));
+      button.addEventListener('click', () => speakParagraph(pair.en, [en, button], UlyssesAudioKey.name(pageNo, paragraphNo, pair.en)));
       const note = document.createElement('button');
       note.type = 'button';
       note.className = 'para-note';

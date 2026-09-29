@@ -3,6 +3,7 @@
 // Run it on your own computer; the key is read from GOOGLE_TTS_API_KEY and never written anywhere.
 //
 //   export GOOGLE_TTS_API_KEY=...            (PowerShell: $env:GOOGLE_TTS_API_KEY="...")
+//   node tools/generate-audio.mjs --book sound-and-fury   (the other book; default is ulysses)
 //   node tools/generate-audio.mjs --dry-run  count characters only, no requests
 //   node tools/generate-audio.mjs --pages 1-3
 //   node tools/generate-audio.mjs            everything (already generated files are skipped)
@@ -14,7 +15,6 @@ import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 const { name: audioName, normalise } = require('../audio-key.js');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const outDir = path.join(root, 'audio');
 
 const args = process.argv.slice(2);
 const flag = (key, fallback) => { const i = args.indexOf('--' + key); return i >= 0 ? (args[i + 1] ?? true) : fallback; };
@@ -27,10 +27,19 @@ const apiKey = process.env.GOOGLE_TTS_API_KEY || '';
 const languageCode = voiceName.split('-').slice(0, 2).join('-');
 const MAX_CHUNK = 2500;
 
-const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
-const match = html.match(/<script id="reader-data" type="application\/json">([\s\S]*?)<\/script>/);
-if (!match) throw new Error('reader-data not found in index.html');
-const pages = JSON.parse(match[1]);
+// --book ulysses (default; pages come from index.html, files in audio/) or sound-and-fury (books/sound-and-fury.json, files in audio/sound-and-fury/)
+const book = String(flag('book', 'ulysses'));
+let pages, outDir;
+if (book === 'ulysses') {
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  const match = html.match(/<script id="reader-data" type="application\/json">([\s\S]*?)<\/script>/);
+  if (!match) throw new Error('reader-data not found in index.html');
+  pages = JSON.parse(match[1]);
+  outDir = path.join(root, 'audio');
+} else if (book === 'sound-and-fury') {
+  pages = JSON.parse(fs.readFileSync(path.join(root, 'books', 'sound-and-fury.json'), 'utf8')).pages;
+  outDir = path.join(root, 'audio', 'sound-and-fury');
+} else throw new Error('--book must be ulysses or sound-and-fury');
 
 const range = String(flag('pages', `1-${pages.length}`)).match(/^(\d+)(?:-(\d+))?$/);
 if (!range) throw new Error('--pages must look like 3 or 1-5');
@@ -48,17 +57,39 @@ console.log(`Pages ${first}-${last}: ${jobs.length} paragraphs, ${chars.toLocale
 if (dryRun) { console.log('Dry run: nothing sent. Compare the character count with your monthly free quota.'); process.exit(0); }
 if (!apiKey) { console.error('Set GOOGLE_TTS_API_KEY first.'); process.exit(1); }
 
+// The API rejects a "sentence" longer than roughly 1,000 characters (Faulkner has run-ons of several thousand),
+// so an over-long sentence is cut at commas / spaces into pieces that are sent as separate requests.
+const MAX_SENTENCE = 600;
+function cutLong(sentence) {
+  const pieces = [];
+  let rest = sentence.trim();
+  while (rest.length > MAX_SENTENCE) {
+    const window = rest.slice(0, MAX_SENTENCE);
+    let cut = Math.max(window.lastIndexOf(', '), window.lastIndexOf('; '), window.lastIndexOf(': '), window.lastIndexOf(' — '));
+    if (cut < MAX_SENTENCE / 2) cut = window.lastIndexOf(' ');
+    if (cut <= 0) cut = MAX_SENTENCE;
+    pieces.push(rest.slice(0, cut + 1).trim());
+    rest = rest.slice(cut + 1).trim();
+  }
+  if (rest) pieces.push(rest);
+  return pieces;
+}
 function chunks(text) {
-  if (text.length <= MAX_CHUNK) return [text];
+  if (text.length <= MAX_CHUNK && text.length <= MAX_SENTENCE) return [text];
   const sentences = text.match(/[^.!?…]+(?:[.!?…]+["'”’)\]]*|$)\s*/g) || [text];
   const out = [];
   let current = '';
+  const flush = () => { if (current.trim()) out.push(current.trim()); current = ''; };
   for (const sentence of sentences) {
-    if (current && (current + sentence).length > MAX_CHUNK) { out.push(current.trim()); current = ''; }
+    if (sentence.trim().length > MAX_SENTENCE) {
+      flush();
+      out.push(...cutLong(sentence));
+      continue;
+    }
+    if (current && (current + sentence).length > MAX_CHUNK) flush();
     current += sentence;
-    while (current.length > MAX_CHUNK) { out.push(current.slice(0, MAX_CHUNK)); current = current.slice(MAX_CHUNK); }
   }
-  if (current.trim()) out.push(current.trim());
+  flush();
   return out;
 }
 
